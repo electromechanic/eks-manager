@@ -1,0 +1,11 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: lab-dev-us-east-1-lab-cluster
+  region: us-east-1
+iamIdentityMappings:
+- arn: arn:aws:iam::290730444397:user/rdickinson
+  username: rdickinson
+  groups:
+  - system:masters
+  noDuplicateARNs: true
