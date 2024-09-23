@@ -8,7 +8,6 @@ from copy import deepcopy
 
 import boto3
 import yaml
-from ruamel.yaml import YAML
 
 from .utils import objectify, run_command
 
@@ -29,7 +28,7 @@ class Eks(object):
         else:
             self.vpc = vpc
         self.cluster_name = (
-            f"{args.organization}-{args.account}-{args.region}-{self.cluster}-cluster"
+            f"cluster-{self.cluster}-{args.organization}-{args.account}-{args.region}"
         )
 
         self.cluster_admins = args.cluster_admins
@@ -43,7 +42,7 @@ class Eks(object):
         self.account_id = sts.get_caller_identity().get("Account")
 
         with open(config, "r") as f:
-            self.config = YAML().load(f)
+            self.config = yaml.safe_load(f)
 
     def check_cluster_exists(self):
         """
@@ -61,10 +60,12 @@ class Eks(object):
         return exists
 
     def create_admin_user(self, user):
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
+        schema_path = (
+            f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
+        )
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
-                YAML().dump(self.create_admin_user_schema(user), f)
+                yaml.safe_dump(self.create_admin_user_schema(user), f)
                 logger.info("Saved cluster schema file to %s", schema_path)
         if self.dry_run:
             command = f"eksctl create iamidentitymapping -f {schema_path}"
@@ -113,11 +114,13 @@ class Eks(object):
         self.vpc.verify_public_elb_tags()
         schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/cluster-{self.cluster}-{version.replace('.', '-')}.yaml"
 
-        if not os.path.isdir(f"config/{self.account}/{self.region}/{self.cluster_name}"):
+        if not os.path.isdir(
+            f"config/{self.account}/{self.region}/{self.cluster_name}"
+        ):
             os.makedirs(f"config/{self.account}/{self.region}/{self.cluster_name}")
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
-                YAML().dump(self.create_cluster_schema(version), f)
+                yaml.safe_dump(self.create_cluster_schema(version), f)
                 logger.info("Saved cluster schema file to %s", schema_path)
 
         if self.dry_run:
@@ -140,29 +143,103 @@ class Eks(object):
         schema = {
             "apiVersion": "eksctl.io/v1alpha5",
             "kind": "ClusterConfig",
-            "metadata": {"name": self.cluster_name, "region": self.region, "version": version},
+            "metadata": {
+                "name": self.cluster_name,
+                "region": self.region,
+                "version": version
+            },
             "vpc": {
                 "id": self.vpc.data.id,
                 "subnets": {
                     "public": self.vpc.public_subnets_by_az,
                     "private": self.vpc.private_subnets_by_az,
                 },
-                "clusterEndpoints": {"privateAccess": True, "publicAccess": True},
+                "clusterEndpoints": {"privateAccess": True, "publicAccess": True}
             },
             "iam": {
                 "withOIDC": True,
                 "serviceAccounts": [
                     {
-                        "metadata": {"name": "alb-ctrlr", "namespace": "kube-system"},
-                        "wellKnownPolicies": {"awsLoadBalancerController": True},
+                        "metadata": {"name": "aws-node", "namespace": "kube-system"},
+                        "attachPolicyARNs": [
+                            "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+                        ],
+                        "roleName": "eks-vpc-cni-role"
+                    },
+                    {
+                        "metadata": {
+                            "name": "aws-load-balancer-controller",
+                            "namespace": "kube-system"
+                        },
+                        "wellKnownPolicies": {"awsLoadBalancerController": True}
+                    },
+                    {
+                        "metadata": {
+                            "name": "aws-s3-csi-controller-sa",
+                            "namespace": "kube-system"
+                        },
+                        "attachPolicyARNs": [
+                            "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+                        ],
+                        "roleName": "eks-s3-csi-driver-role"
                     },
                     {
                         "metadata": {
                             "name": "autoscaler",
                             "namespace": "cluster-autoscaler",
-                            "labels": {"aws-usage": "cluster-ops"},
+                            "labels": {"aws-usage": "cluster-ops"}
                         },
-                        "wellKnownPolicies": {"autoScaler": True},
+                        "wellKnownPolicies": {"autoScaler": True}
+                    },
+                    {
+                        "metadata": {
+                            "name": "cert-manager",
+                            "namespace": "cert-manager"
+                        },
+                        "attachPolicyARNs": [
+                            "arn:aws:iam::aws:policy/AmazonRoute53FullAccess"
+                        ],
+                        "roleName": "eks-cert-manager-role"
+                    },
+                    {
+                        "metadata": {"name": "coredns", "namespace": "kube-system"},
+                        "roleName": "eks-coredns-role"
+                    },
+                    {
+                        "metadata": {
+                            "name": "ebs-csi-controller-sa",
+                            "namespace": "kube-system"
+                        },
+                        "wellKnownPolicies": {"ebsCSIController": True},
+                        "roleName": "eks-ebs-csi-controller-role"
+                    },
+                    {
+                        "metadata": {
+                            "name": "external-dns",
+                            "namespace": "kube-system"
+                        },
+                        "attachPolicyARNs": [
+                            "arn:aws:iam::aws:policy/AmazonRoute53FullAccess"
+                        ],
+                        "roleName": "eks-external-dns-role"
+                    },
+                    {
+                        "metadata": {"name": "fluent-bit", "namespace": "kube-system"},
+                        "attachPolicyARNs": [
+                            "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+                        ],
+                        "roleName": "eks-fluent-bit-role"
+                    },
+                    {
+                        "metadata": {
+                            "name": "metrics-server",
+                            "namespace": "kube-system"
+                        },
+                        "roleName": "eks-metrics-server-role"
+                    },
+                    {
+                        "metadata": {"name": "kube-proxy", "namespace": "kube-system"},
+                        "roleName": "eks-kube-proxy-role"
                     },
                 ],
             },
@@ -172,7 +249,29 @@ class Eks(object):
                     "wellKnownPolicies": {
                         "ebsCSIController": True,
                     },
-                }
+                },
+                {
+                    "name": "aws-s3-csi-driver",
+                },
+                {
+                    "name": "cert-manager",
+                },
+                {
+                    "name": "fluent-bit",
+                },
+                {"name": "metrics-server"},
+                {
+                    "name": "vpc-cni",
+                    "podIdentityAssociations": [
+                        {"namespace": "kube-system", "serviceAccounts": ["aws-node"]}
+                    ],
+                },
+                {
+                    "name": "kube-proxy",
+                },
+                {
+                    "name": "coredns",
+                },
             ],
             "cloudWatch": {
                 "clusterLogging": {
@@ -196,22 +295,22 @@ class Eks(object):
                     "selectors": [{"namespace": "cluster-autoscaler"}],
                     "subnets": deepcopy(self.vpc.private_subnet_ids),
                 },
-            ],
+            ]
         }
         return schema
 
     def create_fargate_profile(self, name, namespace, labels=None):
-        schema_path = (
-            f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
-        )
+        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
         profile = self.create_fargate_profile_schema(namespace, labels)
         logger.info(profile)
         with open(schema_path, "w") as f:
-            YAML().dump(profile, f)
+            yaml.safe_dump(profile, f)
         if self.dry_run:
             logger.info("Dry run enabled, schema written here: %s", schema_path)
             return
-        run_command(["/usr/local/bin/eksctl", "create", "fargateprofile", "-f", schema_path])
+        run_command(
+            ["/usr/local/bin/eksctl", "create", "fargateprofile", "-f", schema_path]
+        )
 
     def create_fargate_profile_schema(self, namespace, labels=None):
         """
@@ -236,7 +335,9 @@ class Eks(object):
                 schema["fargateProfiles"][0]["selectors"].append({k: v})
         return schema
 
-    def create_iam_service_account(self, service_account, namespace, iam_policy_arn=None):
+    def create_iam_service_account(
+        self, service_account, namespace, iam_policy_arn=None
+    ):
         """
         Create the iam service account using eksctl.
         """
@@ -298,7 +399,9 @@ class Eks(object):
         schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
-                YAML().dump(self.create_nodegroup_schema(nodegroup, instance_type), f)
+                yaml.safe_dump(
+                    self.create_nodegroup_schema(nodegroup, instance_type), f
+                )
                 logger.info("Saved nodegroup schema to %s", schema_path)
         if self.dry_run:
             logger.info("Dry run enabled, shema output here: %s", schema_path)
@@ -379,16 +482,16 @@ class Eks(object):
             ]
         )
         if exit_code == 0:
-            schema_path = (
-                f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
-            )
+            schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
             os.unlink(schema_path)
 
     def delete_cluster(self):
         """
         Delete subnet tags and cluster.
         """
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/cluster.yaml"
+        schema_path = (
+            f"config/{self.account}/{self.region}/{self.cluster_name}/cluster.yaml"
+        )
         fargate_profiles = self.get_fargate_profiles()
         for p in fargate_profiles:
             self.delete_fargateprofile(p)
@@ -413,7 +516,10 @@ class Eks(object):
             try:
                 shutil.rmtree("/".join(schema_path.split("/")[:-1]))
             except FileNotFoundError:
-                logger.error("Directory in config not found for the cluster %s", self.cluster_name)
+                logger.error(
+                    "Directory in config not found for the cluster %s",
+                    self.cluster_name,
+                )
 
     def delete_cluster_public_endpoint(self):
         """
@@ -426,22 +532,18 @@ class Eks(object):
             },
         )
         logger.info("Removed cluster control plane public endpoint.")
-        schema_path = (
-            f"config/{self.account}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
-        )
+        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
         with open(schema_path) as f:
-            schema = objectify(YAML().load(f))
+            schema = objectify(yaml.safe_load(f))
         schema.vpc.clusterEndpoints.publicAccess = False
         with open(schema_path, "w") as f:
-            YAML().dump(schema.to_dict(), f)
+            yaml.safe_dump(schema.to_dict(), f)
 
     def delete_fargateprofile(self, name):
         """
         Delete the specified fargateprofile.
         """
-        schema_path = (
-            f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
-        )
+        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
         if self.dry_run:
             command = f"eksctl delete fargateprofile --name fp-{name} -f {schema_path}"
             logger.info("Dry run enabled, command is: %s", command)
@@ -590,11 +692,15 @@ class Eks(object):
         cluster_info = self.eks_client.describe_cluster(name=self.cluster_name)
         response = objectify(
             self.vpc.client.describe_security_groups(
-                GroupIds=cluster_info["cluster"]["resourcesVpcConfig"]["securityGroupIds"],
+                GroupIds=cluster_info["cluster"]["resourcesVpcConfig"][
+                    "securityGroupIds"
+                ],
                 Filters=[
                     {
                         "Name": "tag:Name",
-                        "Values": [f"eksctl-{self.cluster_name}-cluster/ControlPlaneSecurityGroup"],
+                        "Values": [
+                            f"eksctl-{self.cluster_name}-cluster/ControlPlaneSecurityGroup"
+                        ],
                     }
                 ],
             )
@@ -624,7 +730,9 @@ class Eks(object):
                 update_response.ResponseMetadata.HTTPStatusCode,
                 update_response.ResponseMetadata.to_dict(),
             )
-        logger.info("Added 10.0.0.0/8 to the controlplane security group %s", controlplane_sg)
+        logger.info(
+            "Added 10.0.0.0/8 to the controlplane security group %s", controlplane_sg
+        )
 
     def upgrade_all(self, current_version, new_version, drain):
         versions = self.get_versions()
@@ -653,34 +761,39 @@ class Eks(object):
             sys.exit(1)
 
         schema_directory = f"config/{self.account}/{self.region}/{self.cluster_name}"
-        schema_path = (
-            f"{schema_directory}/cluster-{self.cluster}-{current_version.replace('.', '-')}.yaml"
-        )
-        schema_path_new = (
-            f"{schema_directory}/cluster-{self.cluster}-{new_version.replace('.', '-')}.yaml"
-        )
+        schema_path = f"{schema_directory}/cluster-{self.cluster}-{current_version.replace('.', '-')}.yaml"
+        schema_path_new = f"{schema_directory}/cluster-{self.cluster}-{new_version.replace('.', '-')}.yaml"
 
         if not os.path.isdir(schema_directory):
             logger.error("Schema directory does not exist: %s", schema_directory)
             sys.exit(1)
 
         with open(schema_path_new, "w") as f:
-            YAML().dump(self.create_cluster_schema(new_version), f)
+            yaml.safe_dump(self.create_cluster_schema(new_version), f)
             logger.info("Saved cluster schema file to %s", schema_path_new)
 
         if self.dry_run:
-            run_command(["/usr/local/bin/eksctl", "upgrade", "cluster", "-f", schema_path_new])
+            run_command(
+                ["/usr/local/bin/eksctl", "upgrade", "cluster", "-f", schema_path_new]
+            )
             logger.info("Dry run enabled, exiting now")
             return
         exit_code = run_command(
-            ["/usr/local/bin/eksctl", "upgrade", "cluster", "-f", schema_path_new, "--approve"]
+            [
+                "/usr/local/bin/eksctl",
+                "upgrade",
+                "cluster",
+                "-f",
+                schema_path_new,
+                "--approve",
+            ]
         )
         if exit_code == 0:
             os.unlink(schema_path)
 
     def upgrade_nodegroup(self, name, current_version, new_version, drain):
         current_schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/nodegroup-{name}-{current_version.replace('.', '-')}.yaml"
-        current_schema = YAML().load(open(current_schema_path, "r"))
+        current_schema = yaml.safe_load(open(current_schema_path, "r"))
         instance_type = current_schema["managedNodeGroups"][0]["instanceType"]
         desired = current_schema["managedNodeGroups"][0]["desiredCapacity"]
         max = current_schema["managedNodeGroups"][0]["maxSize"]
@@ -736,13 +849,19 @@ class Vpc(object):
             if subnet.map_public_ip_on_launch:
                 for tag in subnet.tags:
                     if tag == {"Key": "Type", "Value": "public"}:
-                        self.public_subnets_by_az[subnet.availability_zone] = {"id": subnet.id}
+                        self.public_subnets_by_az[subnet.availability_zone] = {
+                            "id": subnet.id
+                        }
                         self.public_subnet_ids.append(subnet.id)
             elif not subnet.map_public_ip_on_launch:
                 self.private_subnets_by_az[subnet.availability_zone] = {"id": subnet.id}
                 self.private_subnet_ids.append(subnet.id)
-        self.private_subnets = dict(sorted(self.private_subnets_by_az.items(), key=lambda x: x[0]))
-        self.public_subnets = dict(sorted(self.public_subnets_by_az.items(), key=lambda x: x[0]))
+        self.private_subnets = dict(
+            sorted(self.private_subnets_by_az.items(), key=lambda x: x[0])
+        )
+        self.public_subnets = dict(
+            sorted(self.public_subnets_by_az.items(), key=lambda x: x[0])
+        )
 
     def _get_vpc(self, name):
         """
@@ -760,7 +879,9 @@ class Vpc(object):
             Resources=self.subnets,
             Tags=[{"Key": f"kubernetes.io/cluster/{cluster}", "Value": "shared"}],
         )
-        logger.info("Created subnet tags with kubernetes.io/cluster/%s = shared", cluster)
+        logger.info(
+            "Created subnet tags with kubernetes.io/cluster/%s = shared", cluster
+        )
 
     def delete_cluster_tags(self, cluster):
         """
@@ -770,7 +891,9 @@ class Vpc(object):
             Resources=self.subnets,
             Tags=[{"Key": f"kubernetes.io/cluster/{cluster}", "Value": "shared"}],
         )
-        logger.info("Deleted subnet tags with kubernetes.io/cluster/%s = shared", cluster)
+        logger.info(
+            "Deleted subnet tags with kubernetes.io/cluster/%s = shared", cluster
+        )
 
     def verify_private_elb_tags(self):
         """
@@ -787,7 +910,8 @@ class Vpc(object):
                 needs_tag.append(subnet)
         if needs_tag:
             self.client.create_tags(
-                Resources=needs_tag, Tags=[{"Key": "kubernetes.io/role/internal-elb", "Value": "1"}]
+                Resources=needs_tag,
+                Tags=[{"Key": "kubernetes.io/role/internal-elb", "Value": "1"}],
             )
             logger.info("Applied private subnet internal-elb role tags.")
         else:
@@ -809,7 +933,8 @@ class Vpc(object):
                 needs_tag.append(subnet)
         if needs_tag:
             self.client.create_tags(
-                Resources=needs_tag, Tags=[{"Key": "kubernetes.io/role/elb", "Value": "1"}]
+                Resources=needs_tag,
+                Tags=[{"Key": "kubernetes.io/role/elb", "Value": "1"}],
             )
             logger.info("Applied public subnet elb role tags.")
         else:
