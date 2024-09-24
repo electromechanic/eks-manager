@@ -12,7 +12,7 @@ from ruamel.yaml import YAML
 
 from .utils import objectify, run_command
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  #TODO: add more logging
 
 
 class Eks(object):
@@ -24,12 +24,12 @@ class Eks(object):
         self.cluster = args.cluster
         self.organization = args.organization
         self.region = args.region
-        if not vpc:
+        if not vpc: #TODO: force vpc parameter, or deploy to default vpc
             self.vpc = f"{self.organization}-{self.account}-{self.region}"
         else:
             self.vpc = vpc
         self.cluster_name = (
-            f"{args.organization}-{args.account}-{args.region}-{self.cluster}-cluster"
+            f"cluster-{self.cluster}-{args.organization}-{args.account}-{args.region}" #TODO: put these in a list then combine so a missing value wont affect name hyphenation
         )
 
         self.cluster_admins = args.cluster_admins
@@ -133,11 +133,11 @@ class Eks(object):
         self.update_control_plane_sg()
         # self.delete_cluster_public_endpoint()
 
-    def create_cluster_schema(self, version):
+    def create_cluster_schema(self, version): #TODO: maybe break this apart so starting a cluster is sequenced with nodegroups before addons that need them
         """
         Create the EKS cluster schema document.
         """
-        schema = {
+        schema = {     #TODO: add config options for addon configuration and service accounts, prob need to convert to dictionary
             "apiVersion": "eksctl.io/v1alpha5",
             "kind": "ClusterConfig",
             "metadata": {"name": self.cluster_name, "region": self.region, "version": version},
@@ -731,16 +731,20 @@ class Vpc(object):
         self.private_subnet_ids = []
         self.public_subnets_by_az = {}
         self.public_subnet_ids = []
-        for subnet in self.data.subnets.all():
+        for subnet in self.data.subnets.all():  #TODO: make an input to match public/private subnet tags
             self.subnets.append(subnet.id)
             if subnet.map_public_ip_on_launch:
                 for tag in subnet.tags:
                     if tag == {"Key": "Type", "Value": "public"}:
                         self.public_subnets_by_az[subnet.availability_zone] = {"id": subnet.id}
                         self.public_subnet_ids.append(subnet.id)
-            elif not subnet.map_public_ip_on_launch:
-                self.private_subnets_by_az[subnet.availability_zone] = {"id": subnet.id}
-                self.private_subnet_ids.append(subnet.id)
+            else:
+                for tag in subnet.tags:
+                    if tag == {"Key": "Type", "Value": "private"}:
+                        self.private_subnets_by_az[subnet.availability_zone] = {"id": subnet.id}
+                        self.private_subnet_ids.append(subnet.id)
+        logger.debug(f"Public subnets: {self.public_subnet_ids}")
+        logger.debug(f"Private subnets: {self.private_subnet_ids}")
         self.private_subnets = dict(sorted(self.private_subnets_by_az.items(), key=lambda x: x[0]))
         self.public_subnets = dict(sorted(self.public_subnets_by_az.items(), key=lambda x: x[0]))
 

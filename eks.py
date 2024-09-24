@@ -109,7 +109,7 @@ def arguments():
         action="store",
         dest="kube",
         type=str,
-        choices=["1.23", "1.24", "1.25", "1.26"],
+        choices=["1.23", "1.24", "1.25", "1.26", "1.30"],
         default="1.24",
         help="The major/minor version of Kubernetes to install.",
     )
