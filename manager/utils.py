@@ -52,7 +52,7 @@ def run_command(command, noout=None):
             stderr=subprocess.PIPE,
         )
         stdout, stderr = process.communicate()
-        logger.info("Command output: %s", stdout)
+        logger.debug("Command output: %s", stdout)
         if stderr:
             logger.error("Command error: %s", stderr)
     return process.returncode, stdout, stderr

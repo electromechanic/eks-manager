@@ -743,8 +743,8 @@ class Vpc(object):
                     if tag == {"Key": "Type", "Value": "private"}:
                         self.private_subnets_by_az[subnet.availability_zone] = {"id": subnet.id}
                         self.private_subnet_ids.append(subnet.id)
-        logger.debug(f"Public subnets: {self.public_subnet_ids}")
-        logger.debug(f"Private subnets: {self.private_subnet_ids}")
+        logger.info(f"Public subnets: {self.public_subnet_ids}")
+        logger.info(f"Private subnets: {self.private_subnet_ids}")
         self.private_subnets = dict(sorted(self.private_subnets_by_az.items(), key=lambda x: x[0]))
         self.public_subnets = dict(sorted(self.public_subnets_by_az.items(), key=lambda x: x[0]))
 
