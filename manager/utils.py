@@ -4,9 +4,7 @@ import os
 import random
 import string
 import subprocess
-
-from dotted_dict import DottedDict
-from ruamel.yaml import YAML
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +24,10 @@ def gen_password(length, numbers=True, special_characters=True):
             characters = characters.replace(char, "")
     characters = "".join(random.sample(characters, len(characters)))
     for i in range(int(length)):
-        password = "{0}{1}".format(password, characters[random.randrange(len(characters))])
+        password = "{0}{1}".format(
+            password, characters[random.randrange(len(characters))]
+        )
     return password.encode("utf-8")
-
-
-def objectify(data):
-    """
-    Take json/dict and convert dot notation python object representation.
-    """
-    return DottedDict(data)
 
 
 def run_command(command, noout=None):
@@ -51,16 +44,25 @@ def run_command(command, noout=None):
         )
     else:
         logger.info("Running command '%s'", " ".join(command))
-        process = subprocess.Popen(command, shell=False, cwd=os.getcwd())
-        process.communicate()
+        process = subprocess.Popen(
+            command,
+            shell=False,
+            cwd=os.getcwd(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout, stderr = process.communicate()
+        logger.info("Command output: %s", stdout)
+        if stderr:
+            logger.error("Command error: %s", stderr)
+    return process.returncode, stdout, stderr
 
-    return process.returncode
 
-def stringify_yaml(yaml):
+def stringify_yaml(yaml_data):
     """
     Dump the yaml to a string for use with | in the final yaml file.
     """
     f = io.StringIO()
-    YAML().dump(yaml, f)
+    yaml.dump(yaml_data, f, default_flow_style=False)
     f.seek(0)
     return f.read()
