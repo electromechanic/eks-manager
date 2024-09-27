@@ -12,7 +12,7 @@ from ruamel.yaml import YAML
 
 from .utils import objectify, run_command
 
-logger = logging.getLogger(__name__)  #TODO: add more logging
+logger = logging.getLogger(__name__)  # TODO: add more logging
 
 
 class Eks(object):
@@ -24,13 +24,11 @@ class Eks(object):
         self.cluster = args.cluster
         self.organization = args.organization
         self.region = args.region
-        if not vpc: #TODO: force vpc parameter, or deploy to default vpc
+        if not vpc:  # TODO: force vpc parameter, or deploy to default vpc
             self.vpc = f"{self.organization}-{self.account}-{self.region}"
         else:
             self.vpc = vpc
-        self.cluster_name = (
-            f"cluster-{self.cluster}-{args.organization}-{args.account}-{args.region}" #TODO: put these in a list then combine so a missing value wont affect name hyphenation
-        )
+        self.cluster_name = f"cluster-{self.cluster}-{args.organization}-{args.account}-{args.region}"  # TODO: put these in a list then combine so a missing value wont affect name hyphenation
 
         self.cluster_admins = args.cluster_admins
         self.dry_run = args.dry_run
@@ -61,7 +59,9 @@ class Eks(object):
         return exists
 
     def create_admin_user(self, user):
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
+        schema_path = (
+            f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
+        )
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
                 YAML().dump(self.create_admin_user_schema(user), f)
@@ -113,7 +113,9 @@ class Eks(object):
         self.vpc.verify_public_elb_tags()
         schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/cluster-{self.cluster}-{version.replace('.', '-')}.yaml"
 
-        if not os.path.isdir(f"config/{self.account}/{self.region}/{self.cluster_name}"):
+        if not os.path.isdir(
+            f"config/{self.account}/{self.region}/{self.cluster_name}"
+        ):
             os.makedirs(f"config/{self.account}/{self.region}/{self.cluster_name}")
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
@@ -133,14 +135,20 @@ class Eks(object):
         self.update_control_plane_sg()
         # self.delete_cluster_public_endpoint()
 
-    def create_cluster_schema(self, version): #TODO: maybe break this apart so starting a cluster is sequenced with nodegroups before addons that need them
+    def create_cluster_schema(
+        self, version
+    ):  # TODO: maybe break this apart so starting a cluster is sequenced with nodegroups before addons that need them
         """
         Create the EKS cluster schema document.
         """
-        schema = {     #TODO: add config options for addon configuration and service accounts, prob need to convert to dictionary
+        schema = {  # TODO: add config options for addon configuration and service accounts, prob need to convert to dictionary
             "apiVersion": "eksctl.io/v1alpha5",
             "kind": "ClusterConfig",
-            "metadata": {"name": self.cluster_name, "region": self.region, "version": version},
+            "metadata": {
+                "name": self.cluster_name,
+                "region": self.region,
+                "version": version,
+            },
             "vpc": {
                 "id": self.vpc.data.id,
                 "subnets": {
@@ -201,9 +209,7 @@ class Eks(object):
         return schema
 
     def create_fargate_profile(self, name, namespace, labels=None):
-        schema_path = (
-            f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
-        )
+        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
         profile = self.create_fargate_profile_schema(namespace, labels)
         logger.info(profile)
         with open(schema_path, "w") as f:
@@ -211,7 +217,9 @@ class Eks(object):
         if self.dry_run:
             logger.info("Dry run enabled, schema written here: %s", schema_path)
             return
-        run_command(["/usr/local/bin/eksctl", "create", "fargateprofile", "-f", schema_path])
+        run_command(
+            ["/usr/local/bin/eksctl", "create", "fargateprofile", "-f", schema_path]
+        )
 
     def create_fargate_profile_schema(self, namespace, labels=None):
         """
@@ -236,7 +244,9 @@ class Eks(object):
                 schema["fargateProfiles"][0]["selectors"].append({k: v})
         return schema
 
-    def create_iam_service_account(self, service_account, namespace, iam_policy_arn=None):
+    def create_iam_service_account(
+        self, service_account, namespace, iam_policy_arn=None
+    ):
         """
         Create the iam service account using eksctl.
         """
@@ -379,16 +389,16 @@ class Eks(object):
             ]
         )
         if exit_code == 0:
-            schema_path = (
-                f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
-            )
+            schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
             os.unlink(schema_path)
 
     def delete_cluster(self):
         """
         Delete subnet tags and cluster.
         """
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/cluster.yaml"
+        schema_path = (
+            f"config/{self.account}/{self.region}/{self.cluster_name}/cluster.yaml"
+        )
         fargate_profiles = self.get_fargate_profiles()
         for p in fargate_profiles:
             self.delete_fargateprofile(p)
@@ -413,7 +423,10 @@ class Eks(object):
             try:
                 shutil.rmtree("/".join(schema_path.split("/")[:-1]))
             except FileNotFoundError:
-                logger.error("Directory in config not found for the cluster %s", self.cluster_name)
+                logger.error(
+                    "Directory in config not found for the cluster %s",
+                    self.cluster_name,
+                )
 
     def delete_cluster_public_endpoint(self):
         """
@@ -426,9 +439,7 @@ class Eks(object):
             },
         )
         logger.info("Removed cluster control plane public endpoint.")
-        schema_path = (
-            f"config/{self.account}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
-        )
+        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
         with open(schema_path) as f:
             schema = objectify(YAML().load(f))
         schema.vpc.clusterEndpoints.publicAccess = False
@@ -439,9 +450,7 @@ class Eks(object):
         """
         Delete the specified fargateprofile.
         """
-        schema_path = (
-            f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
-        )
+        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
         if self.dry_run:
             command = f"eksctl delete fargateprofile --name fp-{name} -f {schema_path}"
             logger.info("Dry run enabled, command is: %s", command)
@@ -590,11 +599,15 @@ class Eks(object):
         cluster_info = self.eks_client.describe_cluster(name=self.cluster_name)
         response = objectify(
             self.vpc.client.describe_security_groups(
-                GroupIds=cluster_info["cluster"]["resourcesVpcConfig"]["securityGroupIds"],
+                GroupIds=cluster_info["cluster"]["resourcesVpcConfig"][
+                    "securityGroupIds"
+                ],
                 Filters=[
                     {
                         "Name": "tag:Name",
-                        "Values": [f"eksctl-{self.cluster_name}-cluster/ControlPlaneSecurityGroup"],
+                        "Values": [
+                            f"eksctl-{self.cluster_name}-cluster/ControlPlaneSecurityGroup"
+                        ],
                     }
                 ],
             )
@@ -624,7 +637,9 @@ class Eks(object):
                 update_response.ResponseMetadata.HTTPStatusCode,
                 update_response.ResponseMetadata.to_dict(),
             )
-        logger.info("Added 10.0.0.0/8 to the controlplane security group %s", controlplane_sg)
+        logger.info(
+            "Added 10.0.0.0/8 to the controlplane security group %s", controlplane_sg
+        )
 
     def upgrade_all(self, current_version, new_version, drain):
         versions = self.get_versions()
@@ -653,12 +668,8 @@ class Eks(object):
             sys.exit(1)
 
         schema_directory = f"config/{self.account}/{self.region}/{self.cluster_name}"
-        schema_path = (
-            f"{schema_directory}/cluster-{self.cluster}-{current_version.replace('.', '-')}.yaml"
-        )
-        schema_path_new = (
-            f"{schema_directory}/cluster-{self.cluster}-{new_version.replace('.', '-')}.yaml"
-        )
+        schema_path = f"{schema_directory}/cluster-{self.cluster}-{current_version.replace('.', '-')}.yaml"
+        schema_path_new = f"{schema_directory}/cluster-{self.cluster}-{new_version.replace('.', '-')}.yaml"
 
         if not os.path.isdir(schema_directory):
             logger.error("Schema directory does not exist: %s", schema_directory)
@@ -669,11 +680,20 @@ class Eks(object):
             logger.info("Saved cluster schema file to %s", schema_path_new)
 
         if self.dry_run:
-            run_command(["/usr/local/bin/eksctl", "upgrade", "cluster", "-f", schema_path_new])
+            run_command(
+                ["/usr/local/bin/eksctl", "upgrade", "cluster", "-f", schema_path_new]
+            )
             logger.info("Dry run enabled, exiting now")
             return
         exit_code = run_command(
-            ["/usr/local/bin/eksctl", "upgrade", "cluster", "-f", schema_path_new, "--approve"]
+            [
+                "/usr/local/bin/eksctl",
+                "upgrade",
+                "cluster",
+                "-f",
+                schema_path_new,
+                "--approve",
+            ]
         )
         if exit_code == 0:
             os.unlink(schema_path)
@@ -731,22 +751,34 @@ class Vpc(object):
         self.private_subnet_ids = []
         self.public_subnets_by_az = {}
         self.public_subnet_ids = []
-        for subnet in self.data.subnets.all():  #TODO: make an input to match public/private subnet tags
+        for (
+            subnet
+        ) in (
+            self.data.subnets.all()
+        ):  # TODO: make an input to match public/private subnet tags
             self.subnets.append(subnet.id)
             if subnet.map_public_ip_on_launch:
                 for tag in subnet.tags:
                     if tag == {"Key": "Type", "Value": "public"}:
-                        self.public_subnets_by_az[subnet.availability_zone] = {"id": subnet.id}
+                        self.public_subnets_by_az[subnet.availability_zone] = {
+                            "id": subnet.id
+                        }
                         self.public_subnet_ids.append(subnet.id)
             else:
                 for tag in subnet.tags:
                     if tag == {"Key": "Type", "Value": "private"}:
-                        self.private_subnets_by_az[subnet.availability_zone] = {"id": subnet.id}
+                        self.private_subnets_by_az[subnet.availability_zone] = {
+                            "id": subnet.id
+                        }
                         self.private_subnet_ids.append(subnet.id)
         logger.info(f"Public subnets: {self.public_subnet_ids}")
         logger.info(f"Private subnets: {self.private_subnet_ids}")
-        self.private_subnets = dict(sorted(self.private_subnets_by_az.items(), key=lambda x: x[0]))
-        self.public_subnets = dict(sorted(self.public_subnets_by_az.items(), key=lambda x: x[0]))
+        self.private_subnets = dict(
+            sorted(self.private_subnets_by_az.items(), key=lambda x: x[0])
+        )
+        self.public_subnets = dict(
+            sorted(self.public_subnets_by_az.items(), key=lambda x: x[0])
+        )
 
     def _get_vpc(self, name):
         """
@@ -764,7 +796,9 @@ class Vpc(object):
             Resources=self.subnets,
             Tags=[{"Key": f"kubernetes.io/cluster/{cluster}", "Value": "shared"}],
         )
-        logger.info("Created subnet tags with kubernetes.io/cluster/%s = shared", cluster)
+        logger.info(
+            "Created subnet tags with kubernetes.io/cluster/%s = shared", cluster
+        )
 
     def delete_cluster_tags(self, cluster):
         """
@@ -774,7 +808,9 @@ class Vpc(object):
             Resources=self.subnets,
             Tags=[{"Key": f"kubernetes.io/cluster/{cluster}", "Value": "shared"}],
         )
-        logger.info("Deleted subnet tags with kubernetes.io/cluster/%s = shared", cluster)
+        logger.info(
+            "Deleted subnet tags with kubernetes.io/cluster/%s = shared", cluster
+        )
 
     def verify_private_elb_tags(self):
         """
@@ -791,7 +827,8 @@ class Vpc(object):
                 needs_tag.append(subnet)
         if needs_tag:
             self.client.create_tags(
-                Resources=needs_tag, Tags=[{"Key": "kubernetes.io/role/internal-elb", "Value": "1"}]
+                Resources=needs_tag,
+                Tags=[{"Key": "kubernetes.io/role/internal-elb", "Value": "1"}],
             )
             logger.info("Applied private subnet internal-elb role tags.")
         else:
@@ -813,7 +850,8 @@ class Vpc(object):
                 needs_tag.append(subnet)
         if needs_tag:
             self.client.create_tags(
-                Resources=needs_tag, Tags=[{"Key": "kubernetes.io/role/elb", "Value": "1"}]
+                Resources=needs_tag,
+                Tags=[{"Key": "kubernetes.io/role/elb", "Value": "1"}],
             )
             logger.info("Applied public subnet elb role tags.")
         else:

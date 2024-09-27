@@ -14,10 +14,7 @@ setup(
         "PyYAML",
     ],
     entry_points={
-        'console_scripts': [
-            'eks=eks:cli',
-            'eks-manager=eks:cli'
-        ],
+        "console_scripts": ["eks=eks:cli", "eks-manager=eks:cli"],
     },
     classifiers=[
         "Programming Language :: Python :: 3",
