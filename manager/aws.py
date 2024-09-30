@@ -20,15 +20,15 @@ class Eks(object):
         """
         Init the object.
         """
-        self.account = args.account
+        self.environment = args.environment
         self.cluster = args.cluster
         self.organization = args.organization
         self.region = args.region
         if not vpc:  # TODO: force vpc parameter, or deploy to default vpc
-            self.vpc = f"{self.organization}-{self.account}-{self.region}"
+            self.vpc = f"{self.organization}-{self.environment}-{self.region}"
         else:
             self.vpc = vpc
-        self.cluster_name = f"cluster-{self.cluster}-{args.organization}-{args.account}-{args.region}"  # TODO: put these in a list then combine so a missing value wont affect name hyphenation
+        self.cluster_name = f"cluster-{self.cluster}-{args.organization}-{args.environment}-{args.region}"  # TODO: put these in a list then combine so a missing value wont affect name hyphenation
 
         self.cluster_admins = args.cluster_admins
         self.dry_run = args.dry_run
@@ -38,7 +38,7 @@ class Eks(object):
         self.eks_client = boto3.client("eks", region_name=self.region)
         sts = boto3.client("sts")
         self.iam = boto3.client("iam")
-        self.account_id = sts.get_caller_identity().get("Account")
+        self.environment_id = sts.get_caller_identity().get("Account")
 
         with open(config, "r") as f:
             self.config = YAML().load(f)
@@ -60,7 +60,7 @@ class Eks(object):
 
     def create_admin_user(self, user):
         schema_path = (
-            f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
+            f"config/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
         )
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
@@ -82,7 +82,7 @@ class Eks(object):
 
     def create_admin_user_schema(self, user):
         """"""
-        user_arn = f"arn:aws:iam::{self.account_id}:user/{user}"
+        user_arn = f"arn:aws:iam::{self.environment_id}:user/{user}"
         schema = {
             "apiVersion": "eksctl.io/v1alpha5",
             "kind": "ClusterConfig",
@@ -111,12 +111,12 @@ class Eks(object):
         """
         self.vpc.verify_private_elb_tags()
         self.vpc.verify_public_elb_tags()
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/cluster-{self.cluster}-{version.replace('.', '-')}.yaml"
+        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/cluster-{self.cluster}-{version.replace('.', '-')}.yaml"
 
         if not os.path.isdir(
-            f"config/{self.account}/{self.region}/{self.cluster_name}"
+            f"config/{self.environment}/{self.region}/{self.cluster_name}"
         ):
-            os.makedirs(f"config/{self.account}/{self.region}/{self.cluster_name}")
+            os.makedirs(f"config/{self.environment}/{self.region}/{self.cluster_name}")
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
                 YAML().dump(self.create_cluster_schema(version), f)
@@ -209,7 +209,7 @@ class Eks(object):
         return schema
 
     def create_fargate_profile(self, name, namespace, labels=None):
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
+        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
         profile = self.create_fargate_profile_schema(namespace, labels)
         logger.info(profile)
         with open(schema_path, "w") as f:
@@ -305,7 +305,7 @@ class Eks(object):
             "minSize": min_size,
             "version": version,
         }
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
+        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
                 YAML().dump(self.create_nodegroup_schema(nodegroup, instance_type), f)
@@ -372,7 +372,7 @@ class Eks(object):
 
     def delete_admin_user(self, user):
         if self.dry_run:
-            command = f"eksctl delete iamidentitymapping --cluster {self.cluster_name} --region {self.region} --arn arn:aws:iam::{self.account_id}:user/{user}"
+            command = f"eksctl delete iamidentitymapping --cluster {self.cluster_name} --region {self.region} --arn arn:aws:iam::{self.environment_id}:user/{user}"
             logger.info("Dry run enabled, command is: %s", command)
             return
         exit_code = run_command(
@@ -385,11 +385,11 @@ class Eks(object):
                 "--region",
                 self.region,
                 "--arn",
-                f"arn:aws:iam::{self.account_id}:user/{user}",
+                f"arn:aws:iam::{self.environment_id}:user/{user}",
             ]
         )
         if exit_code == 0:
-            schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
+            schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
             os.unlink(schema_path)
 
     def delete_cluster(self):
@@ -397,7 +397,7 @@ class Eks(object):
         Delete subnet tags and cluster.
         """
         schema_path = (
-            f"config/{self.account}/{self.region}/{self.cluster_name}/cluster.yaml"
+            f"config/{self.environment}/{self.region}/{self.cluster_name}/cluster.yaml"
         )
         fargate_profiles = self.get_fargate_profiles()
         for p in fargate_profiles:
@@ -439,7 +439,7 @@ class Eks(object):
             },
         )
         logger.info("Removed cluster control plane public endpoint.")
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
+        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
         with open(schema_path) as f:
             schema = objectify(YAML().load(f))
         schema.vpc.clusterEndpoints.publicAccess = False
@@ -450,7 +450,7 @@ class Eks(object):
         """
         Delete the specified fargateprofile.
         """
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
+        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
         if self.dry_run:
             command = f"eksctl delete fargateprofile --name fp-{name} -f {schema_path}"
             logger.info("Dry run enabled, command is: %s", command)
@@ -530,7 +530,7 @@ class Eks(object):
         """
         Delete the specified nodegorup.
         """
-        schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
+        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
         drain_flag = f"--drain={drain}"
 
         if self.dry_run:
@@ -560,7 +560,7 @@ class Eks(object):
         Creates a dictionary containing cluster/nodegroup names as keys with k8s versions
         as values.
         """
-        schema_dir = f"config/{self.account}/{self.region}/{self.cluster_name}"
+        schema_dir = f"config/{self.environment}/{self.region}/{self.cluster_name}"
         if not os.path.exists(schema_dir):
             logger.info("Path to schemas does not exist, please check your inputs")
             sys.exit(1)
@@ -578,7 +578,7 @@ class Eks(object):
         Creates a dictionary containing cluster/nodegroup names as keys with k8s versions
         as values.
         """
-        schema_dir = f"config/{self.account}/{self.region}/{self.cluster_name}"
+        schema_dir = f"config/{self.environment}/{self.region}/{self.cluster_name}"
         if not os.path.exists(schema_dir):
             logger.info("Path to schemas does not exist, please check your inputs")
             sys.exit(1)
@@ -667,7 +667,7 @@ class Eks(object):
             logger.error("Cluster %s does not exist. Exiting.", self.cluster_name)
             sys.exit(1)
 
-        schema_directory = f"config/{self.account}/{self.region}/{self.cluster_name}"
+        schema_directory = f"config/{self.environment}/{self.region}/{self.cluster_name}"
         schema_path = f"{schema_directory}/cluster-{self.cluster}-{current_version.replace('.', '-')}.yaml"
         schema_path_new = f"{schema_directory}/cluster-{self.cluster}-{new_version.replace('.', '-')}.yaml"
 
@@ -699,7 +699,7 @@ class Eks(object):
             os.unlink(schema_path)
 
     def upgrade_nodegroup(self, name, current_version, new_version, drain):
-        current_schema_path = f"config/{self.account}/{self.region}/{self.cluster_name}/nodegroup-{name}-{current_version.replace('.', '-')}.yaml"
+        current_schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{current_version.replace('.', '-')}.yaml"
         current_schema = YAML().load(open(current_schema_path, "r"))
         instance_type = current_schema["managedNodeGroups"][0]["instanceType"]
         desired = current_schema["managedNodeGroups"][0]["desiredCapacity"]
@@ -737,7 +737,7 @@ class Vpc(object):
         identification.
         """
         if not args.vpc:
-            vpc_name = f"{args.organization}-{args.account}-{args.region}"
+            vpc_name = f"{args.organization}-{args.environment}-{args.region}"
         else:
             vpc_name = args.vpc
         logger.info(f"vpc name is: {vpc_name}")
