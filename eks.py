@@ -6,7 +6,7 @@ import json
 import os
 import sys
 
-# import manager.aws
+import manager.aws
 from manager.utils import run_command
 
 logging.basicConfig(
@@ -21,31 +21,6 @@ logger = logging.getLogger(__name__)
 # TODO: all options should have env vars for configuration
 # TODO: set up prompts for missing options
 # TODO: config option should be file path type
-
-# Reusable decorator for shared options
-def common_options(func):
-    @click.option(
-        "--cluster-name",
-        "-c",
-        envvar="EKS_CLUSTER_NAME",
-        default="test",
-        help="EKS Cluster name",
-    )
-    @click.option(
-        "--environment",
-        "-e",
-        envvar="EKS_ENVIRONMENT",
-        default="dev",
-        help="Environment",
-    )
-    @click.option(
-        "--region", "-r", envvar="EKS_REGION", default="us-east-1", help="AWS Region"
-    )
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    return wrapper
 
 
 class Repo(object):
@@ -89,6 +64,32 @@ class Repo(object):
             return []
 
 
+# Reusable decorator for shared options
+def common_options(func):
+    @click.option(
+        "--cluster-name",
+        "-c",
+        envvar="EKS_CLUSTER_NAME",
+        default="test",
+        help="EKS Cluster name",
+    )
+    @click.option(
+        "--environment",
+        "-e",
+        envvar="EKS_ENVIRONMENT",
+        default="dev",
+        help="Environment",
+    )
+    @click.option(
+        "--region", "-r", envvar="EKS_REGION", default="us-east-1", help="AWS Region"
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
 @click.group()
 @click.option("--debug", is_flag=True, help="Enable debug mode")
 @click.option("--dry-run", is_flag=True, help="Enable dry-run mode")
@@ -114,28 +115,38 @@ def cluster(repo, cluster_name, environment, region):
 
 @cluster.command()
 @click.option(
+    "-C",
+    "--cluster-admins",
+    envvar="CLUSTER-ADMINS",
+    default=[],
+    help="Space seperated list of IAM user names in the target account to give admin access.",
+)
+@click.option(
     "-k",
     "--kubernetes-version",
     envvar="EKS_KUBERNETES_VERSION",
     default="1.30",
     help="EKS Version",
 )
-@click.option("-v", "--vpc", envvar="EKS_VPC", required=True, help="VPC")
+@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
 @click.pass_obj
-def create(repo, kubernetes_version, vpc):
+def create(repo, cluster_admins, kubernetes_version, vpc_name):
     """Create a new cluster"""
     kubernetes_version_choice = click.Choice(repo.eks_versions)
     if kubernetes_version not in repo.eks_versions:
         click.echo(f"Invalid Kubernetes version: {kubernetes_version}.")
         click.echo(f"Supported versions: {', '.join(repo.eks_versions)}")
         return
-    repo.vpc = vpc
     click.echo("create a cluster")
     click.echo(f"Name: {repo.cluster_name}")
     click.echo(f"Environment: {repo.environment}")
     click.echo(f"Region: {repo.region}")
-    click.echo(f"VPC: {repo.vpc}")
+    click.echo(f"VPC: {vpc_name}")
     click.echo(f"EKS Version: {kubernetes_version}")
+    repo.vpc_name = vpc_name
+    vpc = manager.aws.Vpc(repo)
+    eks_manager = manager.aws.Eks(repo, vpc=vpc)
+    eks_manager.create_cluster(kubernetes_version, cluster_admins)
 
 
 @cluster.command()
@@ -146,6 +157,8 @@ def delete(repo):
     click.echo(f"Name: {repo.cluster_name}")
     click.echo(f"Environment: {repo.environment}")
     click.echo(f"Region: {repo.region}")
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.delete_cluster()
 
 
 @cluster.command()
@@ -172,6 +185,8 @@ def upgrade(repo, kubernetes_version, upgrade_version):
     click.echo(f"Region: {repo.region}")
     click.echo(f"Current Version: {kubernetes_version}")
     click.echo(f"Upgrade Version: {upgrade_version}")
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.upgrade_cluster(kubernetes_version, upgrade_version)
 
 
 @cli.group()
@@ -187,30 +202,57 @@ def fargateprofile(repo, cluster_name, environment, region):
 @fargateprofile.command()
 @click.option(
     "-n",
-    "--namespace",
+    "--name",
     required=True,
     envvar="EKS_FARGATEPROFILE_NAME",
+    help="Name for the fargate profile/nodegroup",
+)
+@click.option(
+    "-N",
+    "--namespace",
+    required=True,
+    envvar="EKS_FARGATEPROFILE_NAMESPACE",
     help="Namespace for the fargate profile/nodegroup",
 )
+@click.option(
+    "-l",
+    "--labels",
+    envvar="EKS_FARGATEPROFILE_LABELS",
+    help="Labels for the fargate profile/nodegroup",
+)
+@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
 @click.pass_obj
-def create(repo, namespace):
+def create(repo, name, namespace, labels, vpc_name):
     """Create Fargate Profile/Nodegroup"""
     click.echo("create a fargate profile")
     click.echo(f"Cluster: {repo.cluster_name}")
     click.echo(f"Environment: {repo.environment}")
     click.echo(f"Region: {repo.region}")
+    click.echo(f"Name: {name}")
     click.echo(f"Namespace: {namespace}")
-
+    click.echo(f"Labels: {labels}")
+    repo.vpc_name = vpc_name
+    vpc = manager.aws.Vpc(repo)
+    eks_manager = manager.aws.Eks(repo, vpc=vpc)
+    eks_manager.create_fargate_profile(name, namespace, labels)
 
 @fargateprofile.command()
+@click.option(
+    "-n",
+    "--name",
+    required=True,
+    envvar="EKS_FARGATEPROFILE_NAME",
+    help="Name for the fargate profile/nodegroup",
+)
 @click.pass_obj
-def delete(repo):
+def delete(repo, name):
     """Delete Fargate Profile/Nodegroup"""
     click.echo("delete a fargate profile")
     click.echo(f"Cluster: {repo.cluster_name}")
     click.echo(f"Environment: {repo.environment}")
     click.echo(f"Region: {repo.region}")
-
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.delete_fargateprofile(name)
 
 @cli.group()
 @common_options

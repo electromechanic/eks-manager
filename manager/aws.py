@@ -8,31 +8,26 @@ from copy import deepcopy
 
 import boto3
 import yaml
-from ruamel.yaml import YAML
 
-from .utils import objectify, run_command
+from .utils import run_command
 
 logger = logging.getLogger(__name__)  # TODO: add more logging
 
 
 class Eks(object):
-    def __init__(self, args, vpc, config):
+    def __init__(self, args, config=None, vpc=None):
         """
         Init the object.
         """
         self.environment = args.environment
-        self.cluster = args.cluster
-        self.organization = args.organization
+        self.cluster = args.cluster_name
         self.region = args.region
-        if not vpc:  # TODO: force vpc parameter, or deploy to default vpc
-            self.vpc = f"{self.organization}-{self.environment}-{self.region}"
-        else:
+        if vpc:
             self.vpc = vpc
-        self.cluster_name = f"cluster-{self.cluster}-{args.organization}-{args.environment}-{args.region}"  # TODO: put these in a list then combine so a missing value wont affect name hyphenation
+        # TODO: put these in a list then combine so a missing value wont affect name hyphenation
+        self.cluster_name = f"cluster-{self.cluster}-{args.environment}-{args.region}"
 
-        self.cluster_admins = args.cluster_admins
         self.dry_run = args.dry_run
-        self.name = args.name
 
         self.cfn = boto3.client("cloudformation", region_name=self.region)
         self.eks_client = boto3.client("eks", region_name=self.region)
@@ -40,16 +35,17 @@ class Eks(object):
         self.iam = boto3.client("iam")
         self.environment_id = sts.get_caller_identity().get("Account")
 
-        with open(config, "r") as f:
-            self.config = YAML().load(f)
+        if config:
+            with open(config, "r") as f:
+                self.config = yaml.safe_load(f)
 
     def check_cluster_exists(self):
         """
         Check is cluster stack already exists.
         """
-        stacks_details = objectify(self.cfn.list_stacks()).StackSummaries
+        stacks_details = self.cfn.list_stacks()['StackSummaries']
         stack_name = f"eksctl-{self.cluster_name}-cluster"
-        stacks = [(s.StackName, s.StackStatus) for s in stacks_details]
+        stacks = [(s["StackName"], s["StackStatus"]) for s in stacks_details]
         exists = False
         for stack, status in stacks:
             if stack == stack_name:
@@ -59,12 +55,10 @@ class Eks(object):
         return exists
 
     def create_admin_user(self, user):
-        schema_path = (
-            f"config/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
-        )
+        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
-                YAML().dump(self.create_admin_user_schema(user), f)
+                yaml.dump(self.create_admin_user_schema(user), f)
                 logger.info("Saved cluster schema file to %s", schema_path)
         if self.dry_run:
             command = f"eksctl create iamidentitymapping -f {schema_path}"
@@ -105,7 +99,7 @@ class Eks(object):
         for user in admins:
             self.create_admin_user(user)
 
-    def create_cluster(self, version):
+    def create_cluster(self, version, cluster_admins):
         """
         Validate all cluster prereqs and create cluster.
         """
@@ -119,7 +113,7 @@ class Eks(object):
             os.makedirs(f"config/{self.environment}/{self.region}/{self.cluster_name}")
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
-                YAML().dump(self.create_cluster_schema(version), f)
+                yaml.dump(self.create_cluster_schema(version), f)
                 logger.info("Saved cluster schema file to %s", schema_path)
 
         if self.dry_run:
@@ -131,7 +125,7 @@ class Eks(object):
             sys.exit(1)
         self.vpc.create_cluster_tags(self.cluster)
         run_command(["/usr/local/bin/eksctl", "create", "cluster", "-f", schema_path])
-        self.create_admin_users(self.cluster_admins)
+        self.create_admin_users(cluster_admins)
         self.update_control_plane_sg()
         # self.delete_cluster_public_endpoint()
 
@@ -213,7 +207,7 @@ class Eks(object):
         profile = self.create_fargate_profile_schema(namespace, labels)
         logger.info(profile)
         with open(schema_path, "w") as f:
-            YAML().dump(profile, f)
+            yaml.dump(profile, f)
         if self.dry_run:
             logger.info("Dry run enabled, schema written here: %s", schema_path)
             return
@@ -221,7 +215,7 @@ class Eks(object):
             ["/usr/local/bin/eksctl", "create", "fargateprofile", "-f", schema_path]
         )
 
-    def create_fargate_profile_schema(self, namespace, labels=None):
+    def create_fargate_profile_schema(self, name, namespace, labels=None):
         """
         Create the fargate profile schema file. Labels are optional and to be placed in fargate, all
         specified labels must be matched.
@@ -232,7 +226,7 @@ class Eks(object):
             "metadata": {"name": self.cluster_name, "region": self.region},
             "fargateProfiles": [
                 {
-                    "name": f"fp-{self.name}",
+                    "name": f"fp-{name}",
                     "selectors": [{"namespace": namespace}],
                     "subnets": deepcopy(self.vpc.private_subnet_ids),
                 }
@@ -283,13 +277,11 @@ class Eks(object):
         """
         with open(f"iam-policies/{service_account}-iam-policy.json") as f:
             iam_policy = json.loads(f.read())
-            response = objectify(
-                self.iam.create_policy(
-                    PolicyName=f"{self.cluster}-{self.region}-{service_account}",
-                    PolicyDocument=json.dumps(iam_policy),
-                )
+            response = self.iam.create_policy(
+                PolicyName=f"{self.cluster}-{self.region}-{service_account}",
+                PolicyDocument=json.dumps(iam_policy),
             )
-            return response.Policy.Arn
+            return response["Policy"]["Arn"]
 
     def create_nodegroup(
         self, name, instance_type, version, desired_capacity=0, min_size=0, max_size=3
@@ -308,7 +300,7 @@ class Eks(object):
         schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
-                YAML().dump(self.create_nodegroup_schema(nodegroup, instance_type), f)
+                yaml.dump(self.create_nodegroup_schema(nodegroup, instance_type), f)
                 logger.info("Saved nodegroup schema to %s", schema_path)
         if self.dry_run:
             logger.info("Dry run enabled, shema output here: %s", schema_path)
@@ -441,10 +433,10 @@ class Eks(object):
         logger.info("Removed cluster control plane public endpoint.")
         schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
         with open(schema_path) as f:
-            schema = objectify(YAML().load(f))
-        schema.vpc.clusterEndpoints.publicAccess = False
+            schema = yaml.safe_load(f)
+        schema["vpc"]["clusterEndpoints"]["publicAccess"] = False
         with open(schema_path, "w") as f:
-            YAML().dump(schema.to_dict(), f)
+            yaml.dump(schema.to_dict(), f)
 
     def delete_fargateprofile(self, name):
         """
@@ -597,45 +589,39 @@ class Eks(object):
         endpoint.
         """
         cluster_info = self.eks_client.describe_cluster(name=self.cluster_name)
-        response = objectify(
-            self.vpc.client.describe_security_groups(
-                GroupIds=cluster_info["cluster"]["resourcesVpcConfig"][
-                    "securityGroupIds"
-                ],
-                Filters=[
-                    {
-                        "Name": "tag:Name",
-                        "Values": [
-                            f"eksctl-{self.cluster_name}-cluster/ControlPlaneSecurityGroup"
-                        ],
-                    }
-                ],
-            )
+        response = self.vpc.client.describe_security_groups(
+            GroupIds=cluster_info["cluster"]["resourcesVpcConfig"]["securityGroupIds"],
+            Filters=[
+                {
+                    "Name": "tag:Name",
+                    "Values": [
+                        f"eksctl-{self.cluster_name}-cluster/ControlPlaneSecurityGroup"
+                    ],
+                }
+            ],
         )
-        controlplane_sg = response.SecurityGroups[0].GroupId
-        update_response = objectify(
-            self.vpc.client.authorize_security_group_ingress(
-                GroupId=controlplane_sg,
-                IpPermissions=[
-                    {
-                        "FromPort": 443,
-                        "IpProtocol": "tcp",
-                        "IpRanges": [
-                            {
-                                "CidrIp": "10.0.0.0/8",
-                                "Description": "VPN connectivity to cluster control plane.",
-                            },
-                        ],
-                        "ToPort": 443,
-                    },
-                ],
-            )
+        controlplane_sg = response["SecurityGroups"][0]["GroupId"]
+        update_response = self.vpc.client.authorize_security_group_ingress(
+            GroupId=controlplane_sg,
+            IpPermissions=[
+                {
+                    "FromPort": 443,
+                    "IpProtocol": "tcp",
+                    "IpRanges": [
+                        {
+                            "CidrIp": "10.0.0.0/8",
+                            "Description": "VPN connectivity to cluster control plane.",
+                        },
+                    ],
+                    "ToPort": 443,
+                },
+            ],
         )
-        if update_response.ResponseMetadata.HTTPStatusCode != 200:
+        if update_response["ResponseMetadata"]["HTTPStatusCode"] != 200:
             raise Exception(
                 "Security group update failed with status code %s, Response of %s",
-                update_response.ResponseMetadata.HTTPStatusCode,
-                update_response.ResponseMetadata.to_dict(),
+                update_response["ResponseMetadata"]["HTTPStatusCode"],
+                update_response["ResponseMetadata"].to_dict(),
             )
         logger.info(
             "Added 10.0.0.0/8 to the controlplane security group %s", controlplane_sg
@@ -667,7 +653,9 @@ class Eks(object):
             logger.error("Cluster %s does not exist. Exiting.", self.cluster_name)
             sys.exit(1)
 
-        schema_directory = f"config/{self.environment}/{self.region}/{self.cluster_name}"
+        schema_directory = (
+            f"config/{self.environment}/{self.region}/{self.cluster_name}"
+        )
         schema_path = f"{schema_directory}/cluster-{self.cluster}-{current_version.replace('.', '-')}.yaml"
         schema_path_new = f"{schema_directory}/cluster-{self.cluster}-{new_version.replace('.', '-')}.yaml"
 
@@ -676,7 +664,7 @@ class Eks(object):
             sys.exit(1)
 
         with open(schema_path_new, "w") as f:
-            YAML().dump(self.create_cluster_schema(new_version), f)
+            yaml.dump(self.create_cluster_schema(new_version), f)
             logger.info("Saved cluster schema file to %s", schema_path_new)
 
         if self.dry_run:
@@ -700,7 +688,7 @@ class Eks(object):
 
     def upgrade_nodegroup(self, name, current_version, new_version, drain):
         current_schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{current_version.replace('.', '-')}.yaml"
-        current_schema = YAML().load(open(current_schema_path, "r"))
+        current_schema = yaml.safe_load(open(current_schema_path, "r"))
         instance_type = current_schema["managedNodeGroups"][0]["instanceType"]
         desired = current_schema["managedNodeGroups"][0]["desiredCapacity"]
         max = current_schema["managedNodeGroups"][0]["maxSize"]
@@ -736,16 +724,12 @@ class Vpc(object):
         Init the class and populate the vpc info based on the Name tag to include subnet
         identification.
         """
-        if not args.vpc:
-            vpc_name = f"{args.organization}-{args.environment}-{args.region}"
-        else:
-            vpc_name = args.vpc
-        logger.info(f"vpc name is: {vpc_name}")
+        logger.info(f"vpc name is: {args.vpc_name}")
         self.region = args.region
         self.session = boto3.Session(region_name=args.region)
         self.ec2 = self.session.resource("ec2")
         self.client = self.session.client("ec2")
-        self.data = self.ec2.Vpc(self._get_vpc(vpc_name))
+        self.data = self.ec2.Vpc(self._get_vpc(args.vpc_name))
         self.subnets = []
         self.private_subnets_by_az = {}
         self.private_subnet_ids = []
@@ -785,8 +769,12 @@ class Vpc(object):
         Return the id of the vpc by reference on the Name tag.
         """
         filters = [{"Name": "tag:Name", "Values": [name]}]
-        vpc = self.ec2.Vpc(self.client.describe_vpcs(Filters=filters).get("Vpcs")[0])
-        return vpc.id.get("VpcId")
+        try:
+            vpc = self.ec2.Vpc(self.client.describe_vpcs(Filters=filters).get("Vpcs")[0])
+            return vpc.id.get("VpcId")
+        except IndexError as err:
+            logger.error(f"VPC: {name} does not exist, {err}")
+            sys.exit(1)
 
     def create_cluster_tags(self, cluster):
         """
