@@ -523,7 +523,10 @@ class Eks(object):
         Delete the specified nodegorup.
         """
         schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
-        drain_flag = f"--drain={drain}"
+        if drain:
+             drain_flag = f"--drain=true"
+        else:
+            drain_flag = ''
 
         if self.dry_run:
             logger.info(

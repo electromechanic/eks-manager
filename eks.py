@@ -236,6 +236,7 @@ def create(repo, name, namespace, labels, vpc_name):
     eks_manager = manager.aws.Eks(repo, vpc=vpc)
     eks_manager.create_fargate_profile(name, namespace, labels)
 
+
 @fargateprofile.command()
 @click.option(
     "-n",
@@ -253,6 +254,7 @@ def delete(repo, name):
     click.echo(f"Region: {repo.region}")
     eks_manager = manager.aws.Eks(repo)
     eks_manager.delete_fargateprofile(name)
+
 
 @cli.group()
 @common_options
@@ -303,7 +305,6 @@ def nodegroup(repo, cluster_name, environment, region):
     default="1.30",
     help="EKS Version",
 )
-@click.option("-v", "--vpc", envvar="EKS_VPC", required=True, help="VPC")
 @click.pass_obj
 def create(
     repo,
@@ -312,11 +313,10 @@ def create(
     desired_capacity,
     max_nodes,
     min_nodes,
-    kubernetes_version,
-    vpc,
+    kubernetes_version
 ):
-    """Create Fargate Profile/Nodegroup"""
-    click.echo("create a fargate profile")
+    """Create Nodegroup"""
+    click.echo("create a nodegroup")
     click.echo(f"Cluster: {repo.cluster_name}")
     click.echo(f"Environment: {repo.environment}")
     click.echo(f"Region: {repo.region}")
@@ -326,7 +326,15 @@ def create(
     click.echo(f"Maximum nodes: {max_nodes}")
     click.echo(f"Minimum nodes: {min_nodes}")
     click.echo(f"Kubernetes version: {kubernetes_version}")
-    click.echo(f"VPC: {vpc}")
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.create_nodegroup(
+        name,
+        instance_class,
+        kubernetes_version,
+        desired_capacity,
+        min_nodes,
+        max_nodes,
+    )
 
 
 @nodegroup.command()
@@ -348,14 +356,17 @@ def create(
     help="Flag to drain nodegroup during upgrade",
 )
 @click.pass_obj
-def delete(repo, name, kubernetes_version):
-    """Create Fargate Profile/Nodegroup"""
+def delete(repo, name, kubernetes_version, drain):
+    """Delete Nodegroup"""
     click.echo("create a fargate profile")
     click.echo(f"Cluster: {repo.cluster_name}")
     click.echo(f"Environment: {repo.environment}")
     click.echo(f"Region: {repo.region}")
     click.echo(f"Name: {name}")
     click.echo(f"Kubernetes version: {kubernetes_version}")
+    click.echo(f"Drain: {drain}")
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.delete_nodegroup(name, kubernetes_version, drain)
 
 
 @nodegroup.command()
@@ -376,9 +387,16 @@ def delete(repo, name, kubernetes_version):
     default="1.30",
     help="EKS Upgrade Version",
 )
+@click.option(
+    "-D",
+    "--drain",
+    is_flag=True,
+    envvar="EKS_NODEGROUP_DRAIN",
+    help="Flag to drain nodegroup during upgrade",
+)
 @click.pass_obj
-def upgrade(repo, name, kubernetes_version, upgrade_version):
-    """Create Fargate Profile/Nodegroup"""
+def upgrade(repo, name, kubernetes_version, upgrade_version, drain):
+    """Upgrade Nodegroup"""
     click.echo("create a fargate profile")
     click.echo(f"Cluster: {repo.cluster_name}")
     click.echo(f"Environment: {repo.environment}")
@@ -386,6 +404,9 @@ def upgrade(repo, name, kubernetes_version, upgrade_version):
     click.echo(f"Name: {name}")
     click.echo(f"Kubernetes version: {kubernetes_version}")
     click.echo(f"Kubernetes upgrade version: {upgrade_version}")
+    click.echo(f"Drain: {drain}")
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.upgrade_nodegroup(name, kubernetes_version, upgrade_version, drain)
 
 
 @nodegroup.command()
@@ -408,7 +429,7 @@ def upgrade(repo, name, kubernetes_version, upgrade_version):
 )
 @click.pass_obj
 def upgrade_ami(repo, name, kubernetes_version, upgrade_version):
-    """Create Fargate Profile/Nodegroup"""
+    """Upgrade Nodegroup AMI"""
     click.echo("create a fargate profile")
     click.echo(f"Cluster: {repo.cluster_name}")
     click.echo(f"Environment: {repo.environment}")
@@ -416,3 +437,5 @@ def upgrade_ami(repo, name, kubernetes_version, upgrade_version):
     click.echo(f"Name: {name}")
     click.echo(f"Kubernetes version: {kubernetes_version}")
     click.echo(f"Kubernetes upgrade version: {upgrade_version}")
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.upgrade_nodegroup_ami(name, kubernetes_version, upgrade_version)
