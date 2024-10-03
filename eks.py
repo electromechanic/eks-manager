@@ -89,6 +89,18 @@ def common_options(func):
 
     return wrapper
 
+def common_nodegroup_options(func):
+    @click.option(
+        "-n", "--name", envvar="EKS_NODEGROUP_NAME", default="test", help="Nodegroup name"
+    )
+    @click.option(
+        "-k", "--kubernetes-version", envvar="EKS_KUBERNETES_VERSION", default="1.30", help="EKS Version"
+    )
+    @functools.wraps(func)  # Keeps the original function signature and docs
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+    return wrapper
+
 
 @click.group()
 @click.option("--debug", is_flag=True, help="Enable debug mode")
@@ -267,9 +279,7 @@ def nodegroup(repo, cluster_name, environment, region):
 
 
 @nodegroup.command()
-@click.option(
-    "-n", "--name", envvar="EKS_NODEGROUP_NAME", default="test", help="Nodegroup name"
-)
+@common_nodegroup_options
 @click.option(
     "-i",
     "--instance-class",
@@ -297,13 +307,6 @@ def nodegroup(repo, cluster_name, environment, region):
     envvar="EKS_NODEGROUP_MINIMUM_NODES",
     default=0,
     help="Minimum nodes",
-)
-@click.option(
-    "-k",
-    "--kubernetes-version",
-    envvar="EKS_KUBERNETES_VERSION",
-    default="1.30",
-    help="EKS Version",
 )
 @click.pass_obj
 def create(
@@ -338,16 +341,7 @@ def create(
 
 
 @nodegroup.command()
-@click.option(
-    "-n", "--name", envvar="EKS_NODEGROUP_NAME", default="test", help="Nodegroup name"
-)
-@click.option(
-    "-k",
-    "--kubernetes-version",
-    envvar="EKS_KUBERNETES_VERSION",
-    default="1.30",
-    help="EKS Version",
-)
+@common_nodegroup_options
 @click.option(
     "-D",
     "--drain",
@@ -370,16 +364,7 @@ def delete(repo, name, kubernetes_version, drain):
 
 
 @nodegroup.command()
-@click.option(
-    "-n", "--name", envvar="EKS_NODEGROUP_NAME", default="test", help="Nodegroup name"
-)
-@click.option(
-    "-k",
-    "--kubernetes-version",
-    envvar="EKS_KUBERNETES_VERSION",
-    default="1.30",
-    help="EKS Version",
-)
+@common_nodegroup_options
 @click.option(
     "-u",
     "--upgrade-version",
@@ -410,16 +395,7 @@ def upgrade(repo, name, kubernetes_version, upgrade_version, drain):
 
 
 @nodegroup.command()
-@click.option(
-    "-n", "--name", envvar="EKS_NODEGROUP_NAME", default="test", help="Nodegroup name"
-)
-@click.option(
-    "-k",
-    "--kubernetes-version",
-    envvar="EKS_KUBERNETES_VERSION",
-    default="1.30",
-    help="EKS Version",
-)
+@common_nodegroup_options
 @click.option(
     "-u",
     "--upgrade-version",
