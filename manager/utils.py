@@ -1,12 +1,71 @@
 import io
 import logging
+import json
 import os
 import random
 import string
 import subprocess
 import yaml
 
+import click
+
 logger = logging.getLogger(__name__)
+
+
+class SpaceSeparatedList(click.ParamType):
+    """Custom type that converts a space-separated string into a list."""
+
+    name = "space-separated-list"
+
+    def convert(self, value, param, ctx):
+        try:
+            return value.split()
+        except AttributeError:
+            self.fail(f"{value} is not a valid space-separated string", param, ctx)
+
+
+# Register the custom type
+
+
+class Repo(object):
+    def __init__(
+        self,
+        dry_run=False,
+        debug=False,
+    ):
+        self.dry_run = dry_run
+        self.debug = debug
+        self.eks_versions = self._get_eks_versions()
+        self.home = os.path.abspath(".")
+
+        logger.debug(f"Repo object created with dry_run={dry_run}, debug={debug}")
+
+    def _get_eks_versions(self):
+        """Get supported versions of eks based on eksctl version."""
+        returncode, stdout, stderr = run_command(
+            [
+                "/usr/local/bin/eksctl",
+                "version",
+                "-o",
+                "json",
+            ]
+        )
+
+        # Check if the command failed
+        if returncode != 0:
+            logger.error(
+                f"Failed to get EKS versions. Return code: {returncode}, stderr: {stderr}"
+            )
+            return []
+
+        try:
+            stdout_dict = json.loads(stdout)
+            versions = stdout_dict.get("EKSServerSupportedVersions", [])
+            logger.debug(f"Supported EKS versions: {versions}")
+            return versions
+        except json.JSONDecodeError as err:
+            logger.error(f"Failed to parse JSON from eksctl output: {err}")
+            return []
 
 
 def gen_password(length, numbers=True, special_characters=True):

@@ -43,7 +43,7 @@ class Eks(object):
         """
         Check is cluster stack already exists.
         """
-        stacks_details = self.cfn.list_stacks()['StackSummaries']
+        stacks_details = self.cfn.list_stacks()["StackSummaries"]
         stack_name = f"eksctl-{self.cluster_name}-cluster"
         stacks = [(s["StackName"], s["StackStatus"]) for s in stacks_details]
         exists = False
@@ -204,7 +204,10 @@ class Eks(object):
 
     def create_fargate_profile(self, name, namespace, labels=None):
         schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
-        profile = self.create_fargate_profile_schema(namespace, labels)
+        try:
+            profile = self.create_fargate_profile_schema(namespace, labels)
+        except BaseException as err:
+            logger.error(err)
         logger.info(profile)
         with open(schema_path, "w") as f:
             yaml.dump(profile, f)
@@ -524,9 +527,9 @@ class Eks(object):
         """
         schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
         if drain:
-             drain_flag = f"--drain=true"
+            drain_flag = f"--drain=true"
         else:
-            drain_flag = ''
+            drain_flag = ""
 
         if self.dry_run:
             logger.info(
@@ -773,7 +776,9 @@ class Vpc(object):
         """
         filters = [{"Name": "tag:Name", "Values": [name]}]
         try:
-            vpc = self.ec2.Vpc(self.client.describe_vpcs(Filters=filters).get("Vpcs")[0])
+            vpc = self.ec2.Vpc(
+                self.client.describe_vpcs(Filters=filters).get("Vpcs")[0]
+            )
             return vpc.id.get("VpcId")
         except IndexError as err:
             logger.error(f"VPC: {name} does not exist, {err}")

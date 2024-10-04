@@ -7,7 +7,7 @@ import os
 import sys
 
 import manager.aws
-from manager.utils import run_command
+from manager.utils import SpaceSeparatedList, Repo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,53 +16,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-# TODO: need a yes parameter for deletion actions
-# TODO: all options should have env vars for configuration
-# TODO: set up prompts for missing options
-# TODO: config option should be file path type
-
-
-class Repo(object):
-    def __init__(
-        self,
-        dry_run=False,
-        debug=False,
-    ):
-        self.dry_run = dry_run
-        self.debug = debug
-        self.eks_versions = self._get_eks_versions()
-        self.home = os.path.abspath(".")
-
-        logger.debug(f"Repo object created with dry_run={dry_run}, debug={debug}")
-
-    def _get_eks_versions(self):
-        """Get supported versions of eks based on eksctl version."""
-        returncode, stdout, stderr = run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "version",
-                "-o",
-                "json",
-            ]
-        )
-
-        # Check if the command failed
-        if returncode != 0:
-            logger.error(
-                f"Failed to get EKS versions. Return code: {returncode}, stderr: {stderr}"
-            )
-            return []
-
-        try:
-            stdout_dict = json.loads(stdout)
-            versions = stdout_dict.get("EKSServerSupportedVersions", [])
-            logger.info(f"Supported EKS versions: {versions}")
-            return versions
-        except json.JSONDecodeError as err:
-            logger.error(f"Failed to parse JSON from eksctl output: {err}")
-            return []
-
+SPACE_SEPARATED_LIST = SpaceSeparatedList()
 
 # Reusable decorator for shared options
 def common_options(func):
@@ -89,16 +43,80 @@ def common_options(func):
 
     return wrapper
 
+
 def common_nodegroup_options(func):
     @click.option(
-        "-n", "--name", envvar="EKS_NODEGROUP_NAME", default="test", help="Nodegroup name"
+        "-n",
+        "--name",
+        envvar="EKS_NODEGROUP_NAME",
+        default="test",
+        help="Nodegroup name",
     )
     @click.option(
-        "-k", "--kubernetes-version", envvar="EKS_KUBERNETES_VERSION", default="1.30", help="EKS Version"
+        "-k",
+        "--kubernetes-version",
+        envvar="EKS_KUBERNETES_VERSION",
+        default="1.30",
+        help="EKS Version",
     )
     @functools.wraps(func)  # Keeps the original function signature and docs
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
+
+    return wrapper
+
+
+def common_iamserviceaccount_options(func):
+    @click.option(
+        "-n",
+        "--name",
+        envvar="EKS_IAMSERVICEACCOUNT_NAME",
+        help="IAM service account name",
+    )
+    @click.option(
+        "-N",
+        "--namespace",
+        required=True,
+        envvar="EKS_IAMSERVICEACCOUNT_NAMESPACE",
+        help="Namespace for the IAM service account",
+    )
+    @functools.wraps(func)  # Keeps the original function signature and docs
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+import logging
+from functools import wraps
+
+# Initialize the logger
+logger = logging.getLogger(__name__)
+
+
+def log_debug_parameters(func):
+    """Decorator to log function parameters, including contents of repo object."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # Log positional arguments
+        if args:
+            logger.debug(f"Positional args: {', '.join(map(str, args))}")
+        # Log keyword arguments
+        if kwargs:
+            details = ", ".join([f"{key}: {value}" for key, value in kwargs.items()])
+            logger.debug(f"Keyword args: {details}")
+        # Check for `repo` in args and log its attributes
+        for arg in args:
+            if hasattr(arg, "__dict__"):  # Check if it has attributes
+                repo_attrs = vars(arg)  # Or arg.__dict__
+                repo_details = ", ".join(
+                    [f"{key}: {value}" for key, value in repo_attrs.items()]
+                )
+                logger.debug(f"Repo object contents: {repo_details}")
+        # Execute the original function
+        return func(*args, **kwargs)
+
     return wrapper
 
 
@@ -118,6 +136,7 @@ def cli(ctx, dry_run, debug):
 @cli.group()
 @common_options
 @click.pass_obj
+@log_debug_parameters
 def cluster(repo, cluster_name, environment, region):
     """Manage cluster actions like create, delete, or upgrade."""
     repo.cluster_name = cluster_name
@@ -129,32 +148,28 @@ def cluster(repo, cluster_name, environment, region):
 @click.option(
     "-C",
     "--cluster-admins",
-    envvar="CLUSTER-ADMINS",
+    envvar="EKS_CLUSTER_CLUSTER_ADMINS",
+    type=SPACE_SEPARATED_LIST,
     default=[],
     help="Space seperated list of IAM user names in the target account to give admin access.",
 )
 @click.option(
     "-k",
     "--kubernetes-version",
-    envvar="EKS_KUBERNETES_VERSION",
-    default="1.30",
+    envvar="EKS_CLUSTER_VERSION",
+    default="repo",
     help="EKS Version",
 )
 @click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
 @click.pass_obj
+@log_debug_parameters
 def create(repo, cluster_admins, kubernetes_version, vpc_name):
     """Create a new cluster"""
     kubernetes_version_choice = click.Choice(repo.eks_versions)
     if kubernetes_version not in repo.eks_versions:
-        click.echo(f"Invalid Kubernetes version: {kubernetes_version}.")
-        click.echo(f"Supported versions: {', '.join(repo.eks_versions)}")
+        logger.info(f"Invalid Kubernetes version: {kubernetes_version}.")
+        logger.info(f"Supported versions: {', '.join(repo.eks_versions)}")
         return
-    click.echo("create a cluster")
-    click.echo(f"Name: {repo.cluster_name}")
-    click.echo(f"Environment: {repo.environment}")
-    click.echo(f"Region: {repo.region}")
-    click.echo(f"VPC: {vpc_name}")
-    click.echo(f"EKS Version: {kubernetes_version}")
     repo.vpc_name = vpc_name
     vpc = manager.aws.Vpc(repo)
     eks_manager = manager.aws.Eks(repo, vpc=vpc)
@@ -162,14 +177,14 @@ def create(repo, cluster_admins, kubernetes_version, vpc_name):
 
 
 @cluster.command()
+@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
 @click.pass_obj
-def delete(repo):
+@log_debug_parameters
+def delete(repo, vpc_name):
     """Delete eks cluster"""
-    click.echo("delete a cluster")
-    click.echo(f"Name: {repo.cluster_name}")
-    click.echo(f"Environment: {repo.environment}")
-    click.echo(f"Region: {repo.region}")
-    eks_manager = manager.aws.Eks(repo)
+    repo.vpc_name = vpc_name
+    vpc = manager.aws.Vpc(repo)
+    eks_manager = manager.aws.Eks(repo, vpc=vpc)
     eks_manager.delete_cluster()
 
 
@@ -188,22 +203,21 @@ def delete(repo):
     default="1.30",
     help="EKS Upgrade Version",
 )
+@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
 @click.pass_obj
-def upgrade(repo, kubernetes_version, upgrade_version):
+@log_debug_parameters
+def upgrade(repo, kubernetes_version, upgrade_version, vpc_name):
     """Upgrade eks cluster"""
-    click.echo("upgrade a cluster")
-    click.echo(f"Name: {repo.cluster_name}")
-    click.echo(f"Environment: {repo.environment}")
-    click.echo(f"Region: {repo.region}")
-    click.echo(f"Current Version: {kubernetes_version}")
-    click.echo(f"Upgrade Version: {upgrade_version}")
-    eks_manager = manager.aws.Eks(repo)
+    repo.vpc_name = vpc_name
+    vpc = manager.aws.Vpc(repo)
+    eks_manager = manager.aws.Eks(repo, vpc=vpc)
     eks_manager.upgrade_cluster(kubernetes_version, upgrade_version)
 
 
 @cli.group()
 @common_options
 @click.pass_obj
+@log_debug_parameters
 def fargateprofile(repo, cluster_name, environment, region):
     """Manage fargate profiles/nodegroups, like create, delete."""
     repo.cluster_name = cluster_name
@@ -234,19 +248,13 @@ def fargateprofile(repo, cluster_name, environment, region):
 )
 @click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
 @click.pass_obj
+@log_debug_parameters
 def create(repo, name, namespace, labels, vpc_name):
     """Create Fargate Profile/Nodegroup"""
-    click.echo("create a fargate profile")
-    click.echo(f"Cluster: {repo.cluster_name}")
-    click.echo(f"Environment: {repo.environment}")
-    click.echo(f"Region: {repo.region}")
-    click.echo(f"Name: {name}")
-    click.echo(f"Namespace: {namespace}")
-    click.echo(f"Labels: {labels}")
     repo.vpc_name = vpc_name
     vpc = manager.aws.Vpc(repo)
     eks_manager = manager.aws.Eks(repo, vpc=vpc)
-    eks_manager.create_fargate_profile(name, namespace, labels)
+    eks_manager.create_fargate_profile(name, namespace, labels=labels)
 
 
 @fargateprofile.command()
@@ -258,12 +266,9 @@ def create(repo, name, namespace, labels, vpc_name):
     help="Name for the fargate profile/nodegroup",
 )
 @click.pass_obj
+@log_debug_parameters
 def delete(repo, name):
     """Delete Fargate Profile/Nodegroup"""
-    click.echo("delete a fargate profile")
-    click.echo(f"Cluster: {repo.cluster_name}")
-    click.echo(f"Environment: {repo.environment}")
-    click.echo(f"Region: {repo.region}")
     eks_manager = manager.aws.Eks(repo)
     eks_manager.delete_fargateprofile(name)
 
@@ -271,6 +276,7 @@ def delete(repo, name):
 @cli.group()
 @common_options
 @click.pass_obj
+@log_debug_parameters
 def nodegroup(repo, cluster_name, environment, region):
     """Manage nodegroups, like create, delete, upgrade."""
     repo.cluster_name = cluster_name
@@ -309,6 +315,7 @@ def nodegroup(repo, cluster_name, environment, region):
     help="Minimum nodes",
 )
 @click.pass_obj
+@log_debug_parameters
 def create(
     repo,
     name,
@@ -316,19 +323,9 @@ def create(
     desired_capacity,
     max_nodes,
     min_nodes,
-    kubernetes_version
+    kubernetes_version,
 ):
     """Create Nodegroup"""
-    click.echo("create a nodegroup")
-    click.echo(f"Cluster: {repo.cluster_name}")
-    click.echo(f"Environment: {repo.environment}")
-    click.echo(f"Region: {repo.region}")
-    click.echo(f"Name: {name}")
-    click.echo(f"Instance class: {instance_class}")
-    click.echo(f"Desired Capacity: {desired_capacity}")
-    click.echo(f"Maximum nodes: {max_nodes}")
-    click.echo(f"Minimum nodes: {min_nodes}")
-    click.echo(f"Kubernetes version: {kubernetes_version}")
     eks_manager = manager.aws.Eks(repo)
     eks_manager.create_nodegroup(
         name,
@@ -350,15 +347,9 @@ def create(
     help="Flag to drain nodegroup during upgrade",
 )
 @click.pass_obj
+@log_debug_parameters
 def delete(repo, name, kubernetes_version, drain):
     """Delete Nodegroup"""
-    click.echo("create a fargate profile")
-    click.echo(f"Cluster: {repo.cluster_name}")
-    click.echo(f"Environment: {repo.environment}")
-    click.echo(f"Region: {repo.region}")
-    click.echo(f"Name: {name}")
-    click.echo(f"Kubernetes version: {kubernetes_version}")
-    click.echo(f"Drain: {drain}")
     eks_manager = manager.aws.Eks(repo)
     eks_manager.delete_nodegroup(name, kubernetes_version, drain)
 
@@ -380,16 +371,9 @@ def delete(repo, name, kubernetes_version, drain):
     help="Flag to drain nodegroup during upgrade",
 )
 @click.pass_obj
+@log_debug_parameters
 def upgrade(repo, name, kubernetes_version, upgrade_version, drain):
     """Upgrade Nodegroup"""
-    click.echo("create a fargate profile")
-    click.echo(f"Cluster: {repo.cluster_name}")
-    click.echo(f"Environment: {repo.environment}")
-    click.echo(f"Region: {repo.region}")
-    click.echo(f"Name: {name}")
-    click.echo(f"Kubernetes version: {kubernetes_version}")
-    click.echo(f"Kubernetes upgrade version: {upgrade_version}")
-    click.echo(f"Drain: {drain}")
     eks_manager = manager.aws.Eks(repo)
     eks_manager.upgrade_nodegroup(name, kubernetes_version, upgrade_version, drain)
 
@@ -404,14 +388,124 @@ def upgrade(repo, name, kubernetes_version, upgrade_version, drain):
     help="EKS Upgrade Version",
 )
 @click.pass_obj
+@log_debug_parameters
 def upgrade_ami(repo, name, kubernetes_version, upgrade_version):
     """Upgrade Nodegroup AMI"""
-    click.echo("create a fargate profile")
-    click.echo(f"Cluster: {repo.cluster_name}")
-    click.echo(f"Environment: {repo.environment}")
-    click.echo(f"Region: {repo.region}")
-    click.echo(f"Name: {name}")
-    click.echo(f"Kubernetes version: {kubernetes_version}")
-    click.echo(f"Kubernetes upgrade version: {upgrade_version}")
     eks_manager = manager.aws.Eks(repo)
     eks_manager.upgrade_nodegroup_ami(name, kubernetes_version, upgrade_version)
+
+
+@cli.group()
+@common_options
+@click.pass_obj
+@log_debug_parameters
+def iamserviceaccount(repo, cluster_name, environment, region):
+    """Manage IAM service accounts, like create, delete."""
+    repo.cluster_name = cluster_name
+    repo.environment = environment
+    repo.region = region
+
+
+@iamserviceaccount.command()
+@common_iamserviceaccount_options
+@click.option(
+    "-P",
+    "--iam-policy-arn",
+    envvar="EKS_IAMSERVICEACCOUNT_POLICYARN",
+    help="IAM service account policy ARN",
+)
+@click.pass_obj
+@log_debug_parameters
+def create(repo, name, namespace, iam_policy_arn):
+    """Create IAM service account"""
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.create_iam_service_account(
+        name, namespace, iam_policy_arn=iam_policy_arn
+    )
+
+
+@iamserviceaccount.command()
+@common_iamserviceaccount_options
+@click.pass_obj
+@log_debug_parameters
+def delete(repo, name, namespace):
+    """Create IAM service account"""
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.delete_iam_service_account(name, namespace)
+
+
+@cli.group()
+@common_options
+@click.pass_obj
+@log_debug_parameters
+def adminusermap(repo, cluster_name, environment, region):
+    """Manage IAM service accounts, like create, delete."""
+    repo.cluster_name = cluster_name
+    repo.environment = environment
+    repo.region = region
+
+
+@adminusermap.command()
+@click.option("-n", "--name", envvar="EKS_ADMINUSERMAP_NAME", help="IAM user name")
+@click.pass_obj
+@log_debug_parameters
+def create(repo, name):
+    """Create IAM service account"""
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.create_admin_user(name)
+
+
+@adminusermap.command()
+@click.option("-n", "--name", envvar="EKS_ADMINUSERMAP_NAME", help="IAM user name")
+@click.pass_obj
+@log_debug_parameters
+def delete(repo, name):
+    """Create IAM service account"""
+    eks_manager = manager.aws.Eks(repo)
+    eks_manager.delete_admin_user(name)
+
+
+@cli.command()
+@common_options
+@click.option(
+    "-k",
+    "--kubernetes-version",
+    envvar="EKS_KUBERNETES_VERSION",
+    default="1.30",
+    help="EKS Version",
+)
+@click.option(
+    "-u",
+    "--upgrade-version",
+    envvar="EKS_KUBERNETES_UPGRADE_VERSION",
+    default="1.30",
+    help="EKS Upgrade Version",
+)
+@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
+@click.option(
+    "-D",
+    "--drain",
+    is_flag=True,
+    envvar="EKS_NODEGROUP_DRAIN",
+    help="Flag to drain nodegroup during upgrade",
+)
+@click.pass_obj
+@log_debug_parameters
+def upgrade_all(
+    repo,
+    cluster_name,
+    environment,
+    region,
+    kubernetes_version,
+    upgrade_version,
+    vpc_name,
+    drain,
+):
+    """Create IAM admin user mapping"""
+    repo.cluster_name = cluster_name
+    repo.environment = environment
+    repo.region = region
+    repo.vpc_name = vpc_name
+    vpc = manager.aws.Vpc(repo)
+    eks_manager = manager.aws.Eks(repo, vpc=vpc)
+    eks_manager.upgrade_all(kubernetes_version, upgrade_version, drain)
