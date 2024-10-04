@@ -9,6 +9,8 @@ import yaml
 
 import click
 
+from functools import wraps
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,6 +90,30 @@ def gen_password(length, numbers=True, special_characters=True):
         )
     return password.encode("utf-8")
 
+def log_debug_parameters(func):
+    """Decorator to log function parameters, including contents of repo object."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # Log positional arguments
+        if args:
+            logger.debug(f"Positional args: {', '.join(map(str, args))}")
+        # Log keyword arguments
+        if kwargs:
+            details = ", ".join([f"{key}: {value}" for key, value in kwargs.items()])
+            logger.debug(f"Keyword args: {details}")
+        # Check for `repo` in args and log its attributes
+        for arg in args:
+            if hasattr(arg, "__dict__"):  # Check if it has attributes
+                repo_attrs = vars(arg)  # Or arg.__dict__
+                repo_details = ", ".join(
+                    [f"{key}: {value}" for key, value in repo_attrs.items()]
+                )
+                logger.debug(f"Repo object contents: {repo_details}")
+        # Execute the original function
+        return func(*args, **kwargs)
+
+    return wrapper
 
 def run_command(command, noout=None):
     """

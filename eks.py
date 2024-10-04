@@ -2,12 +2,9 @@
 import click
 import functools
 import logging
-import json
-import os
-import sys
 
 import manager.aws
-from manager.utils import SpaceSeparatedList, Repo
+from manager.utils import SpaceSeparatedList, Repo, log_debug_parameters
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,39 +79,6 @@ def common_iamserviceaccount_options(func):
     )
     @functools.wraps(func)  # Keeps the original function signature and docs
     def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    return wrapper
-
-
-import logging
-from functools import wraps
-
-# Initialize the logger
-logger = logging.getLogger(__name__)
-
-
-def log_debug_parameters(func):
-    """Decorator to log function parameters, including contents of repo object."""
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        # Log positional arguments
-        if args:
-            logger.debug(f"Positional args: {', '.join(map(str, args))}")
-        # Log keyword arguments
-        if kwargs:
-            details = ", ".join([f"{key}: {value}" for key, value in kwargs.items()])
-            logger.debug(f"Keyword args: {details}")
-        # Check for `repo` in args and log its attributes
-        for arg in args:
-            if hasattr(arg, "__dict__"):  # Check if it has attributes
-                repo_attrs = vars(arg)  # Or arg.__dict__
-                repo_details = ", ".join(
-                    [f"{key}: {value}" for key, value in repo_attrs.items()]
-                )
-                logger.debug(f"Repo object contents: {repo_details}")
-        # Execute the original function
         return func(*args, **kwargs)
 
     return wrapper
