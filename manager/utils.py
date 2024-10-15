@@ -10,8 +10,90 @@ import yaml
 import click
 
 from functools import wraps
+from pprint import pformat
+
+from .template import Render
 
 logger = logging.getLogger(__name__)
+
+class ConfigProcessor(object):
+    def __init__(self, repo):
+        """
+        Init the object.
+        """
+        self.repo = repo
+        self.template = Render(repo)
+
+    def cluster(self, config):
+        """detect config format and pass to corresponding method"""
+        if isinstance(config, Repo):
+            self._cluster_cli(config)
+            return
+        try:
+            json.loads(config)
+            return "JSON string"
+        except (json.JSONDecodeError, TypeError):
+            pass  # Not a valid JSON string
+
+        try:
+            yaml.safe_load(config)
+            return "YAML string"
+        except (yaml.YAMLError, TypeError, AttributeError):
+            pass
+
+        raise ValueError("Config is not a Repo object, valid JSON, or valid YAML.")
+        
+    def _cluster_cli(self, repo):
+        """Build cluster config from CLI repo values"""
+        self.repo.all_subnets = repo.private_subnets + repo.public_subnets
+        cluster_config = self.template.cluster_config()
+        self.cluster_config = cluster_config
+        self.cluster_config_json = json.dumps(cluster_config, indent=4)
+        self.cluster_config_yaml = yaml.dump(cluster_config, default_flow_style=False)
+    
+    def write_state(self, repo, config):
+        if repo.state == 'local':
+            self._write_local_state(repo, config)
+            return
+        if repo.state == 's3':
+            logger.info('write to s3')
+            return
+        if repo.state == 'mongo':
+            logger.info('write to mongo')
+            return
+
+    
+    def _write_local_state(self, repo, config):
+        if repo.dry_run:
+            state_prefix = 'dry-run'
+        else:
+            state_prefix = 'state'
+        path = f"{state_prefix}/{repo.state_path}"
+        if not os.path.isdir(path):
+            os.makedirs(path)
+        # if not os.path.exists(f"{path}/"):
+        with open(f"{path}/{repo.cluster_filename}", "w") as f:
+            if repo.format == 'json':
+                f.write(config.cluster_config_json)
+            elif repo.format == 'yaml':
+                f.write(config.cluster_config_yaml)
+            logger.info(f"Saved cluster sate file to { f'{path}/{repo.cluster_filename}'}")
+
+class KeyValueType(click.ParamType):
+    name = "key-value pair"
+
+    def convert(self, value, param, ctx):
+        if value is None or value == {}:
+            return {}
+        try:
+            key_value_pairs = value.split()
+            result = {}
+            for pair in key_value_pairs:
+                key, val = pair.split("=")
+                result[key] = val
+            return result
+        except ValueError:
+            self.fail(f"{value} is not a valid key=value pair", param, ctx)
 
 
 class SpaceSeparatedList(click.ParamType):
@@ -20,25 +102,34 @@ class SpaceSeparatedList(click.ParamType):
     name = "space-separated-list"
 
     def convert(self, value, param, ctx):
+        if value is None or value == "":
+            return []
         try:
             return value.split()
         except AttributeError:
             self.fail(f"{value} is not a valid space-separated string", param, ctx)
 
 
-# Register the custom type
-
-
 class Repo(object):
     def __init__(
         self,
+        format,
         dry_run=False,
         debug=False,
     ):
         self.dry_run = dry_run
         self.debug = debug
         self.eks_versions = self._get_eks_versions()
+        self.format = format
         self.home = os.path.abspath(".")
+
+        self.environment = ""
+        self.region = ""
+        self.cluster_name = ""
+        self.version = ""
+        self.state_path = f"{self.environment}/{self.region}/{self.cluster_name}/"
+
+        self.state = 'local'
 
         logger.debug(f"Repo object created with dry_run={dry_run}, debug={debug}")
 
@@ -90,6 +181,7 @@ def gen_password(length, numbers=True, special_characters=True):
         )
     return password.encode("utf-8")
 
+
 def log_debug_parameters(func):
     """Decorator to log function parameters, including contents of repo object."""
 
@@ -114,6 +206,7 @@ def log_debug_parameters(func):
         return func(*args, **kwargs)
 
     return wrapper
+
 
 def run_command(command, noout=None):
     """
@@ -142,6 +235,14 @@ def run_command(command, noout=None):
             logger.error("Command error: %s", stderr)
     return process.returncode, stdout, stderr
 
+def set_args_in_repo(repo, args):
+    for key, value in args.items():
+        if key != "repo":  # Skip repo
+            if isinstance(value, (str, int, float, bool, list, dict, type(None))):
+                logger.debug(f"setting repo: {key} = {value}")
+                setattr(repo, key, value)
+            else:
+                logger.warn(f"Skipping unsupported type for {key}: {type(value)}")
 
 def stringify_yaml(yaml_data):
     """

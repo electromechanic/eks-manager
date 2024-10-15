@@ -1,3 +1,4 @@
+import importlib.resources
 import json
 import logging
 import os
@@ -5,6 +6,8 @@ import shutil
 import sys
 import time
 from copy import deepcopy
+from pprint import pformat
+
 
 import boto3
 import yaml
@@ -20,15 +23,15 @@ class Eks(object):
         Init the object.
         """
         self.environment = args.environment
-        self.cluster = args.cluster_name
+        self.cluster_name = args.cluster_name
         self.region = args.region
         if vpc:
             self.vpc = vpc
         # TODO: put these in a list then combine so a missing value wont affect name hyphenation
-        self.cluster_name = f"cluster-{self.cluster}-{args.environment}-{args.region}"
+        # self.cluster_name = f"cluster-{self.cluster}-{args.environment}-{args.region}"
 
         self.dry_run = args.dry_run
-
+        self.eks = boto3.client("eks", region_name=self.region)
         self.cfn = boto3.client("cloudformation", region_name=self.region)
         self.eks_client = boto3.client("eks", region_name=self.region)
         sts = boto3.client("sts")
@@ -55,7 +58,7 @@ class Eks(object):
         return exists
 
     def create_admin_user(self, user):
-        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
+        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
                 yaml.dump(self.create_admin_user_schema(user), f)
@@ -99,111 +102,39 @@ class Eks(object):
         for user in admins:
             self.create_admin_user(user)
 
-    def create_cluster(self, version, cluster_admins):
+    def create_cluster(self, config, vpc):
         """
         Validate all cluster prereqs and create cluster.
         """
-        self.vpc.verify_private_elb_tags()
-        self.vpc.verify_public_elb_tags()
-        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/cluster-{self.cluster}-{version.replace('.', '-')}.yaml"
+        vpc.verify_private_elb_tags()
+        vpc.verify_public_elb_tags()
 
-        if not os.path.isdir(
-            f"config/{self.environment}/{self.region}/{self.cluster_name}"
-        ):
-            os.makedirs(f"config/{self.environment}/{self.region}/{self.cluster_name}")
-        if not os.path.exists(schema_path):
-            with open(schema_path, "w") as f:
-                yaml.dump(self.create_cluster_schema(version), f)
-                logger.info("Saved cluster schema file to %s", schema_path)
-
-        if self.dry_run:
-            command = f"eksctl create cluster -f {schema_path}"
-            logger.info("Dry run enabled, command is: %s", command)
-            return
         if self.check_cluster_exists() is True:
-            logger.error("Cluster %s already exists.", self.cluster_name)
+            logger.error("Cluster %s already exists.", config.name)
             sys.exit(1)
-        self.vpc.create_cluster_tags(self.cluster)
-        run_command(["/usr/local/bin/eksctl", "create", "cluster", "-f", schema_path])
-        self.create_admin_users(cluster_admins)
+        vpc.create_cluster_tags(self.cluster)
+
+        cluster = self.eks.create_cluster(**cluster_params)
+        waiter = self.eks.get_waiter("cluster_active")
+        logger.info("Waiting for EKS cluster to become active...")
+        try:
+            waiter.wait(
+                name=config.name,
+                WaiterConfig={
+                    "Delay": 30,  # seconds between each pole
+                    "MaxAttempts": 40,  # max attempts (20 mins)
+                },
+            )
+            logger.info("Cluster is now active!")
+        except Exception as e:
+            logger.error(f"Error waiting for the cluster to become active: {e}")
+            sys.exit(1)
+        self.create_admin_users(config.cluster_admins)
         self.update_control_plane_sg()
         # self.delete_cluster_public_endpoint()
 
-    def create_cluster_schema(
-        self, version
-    ):  # TODO: maybe break this apart so starting a cluster is sequenced with nodegroups before addons that need them
-        """
-        Create the EKS cluster schema document.
-        """
-        schema = {  # TODO: add config options for addon configuration and service accounts, prob need to convert to dictionary
-            "apiVersion": "eksctl.io/v1alpha5",
-            "kind": "ClusterConfig",
-            "metadata": {
-                "name": self.cluster_name,
-                "region": self.region,
-                "version": version,
-            },
-            "vpc": {
-                "id": self.vpc.data.id,
-                "subnets": {
-                    "public": self.vpc.public_subnets_by_az,
-                    "private": self.vpc.private_subnets_by_az,
-                },
-                "clusterEndpoints": {"privateAccess": True, "publicAccess": True},
-            },
-            "iam": {
-                "withOIDC": True,
-                "serviceAccounts": [
-                    {
-                        "metadata": {"name": "alb-ctrlr", "namespace": "kube-system"},
-                        "wellKnownPolicies": {"awsLoadBalancerController": True},
-                    },
-                    {
-                        "metadata": {
-                            "name": "autoscaler",
-                            "namespace": "cluster-autoscaler",
-                            "labels": {"aws-usage": "cluster-ops"},
-                        },
-                        "wellKnownPolicies": {"autoScaler": True},
-                    },
-                ],
-            },
-            "addons": [
-                {
-                    "name": "aws-ebs-csi-driver",
-                    "wellKnownPolicies": {
-                        "ebsCSIController": True,
-                    },
-                }
-            ],
-            "cloudWatch": {
-                "clusterLogging": {
-                    "enableTypes": [
-                        "api",
-                        "audit",
-                        "authenticator",
-                        "controllerManager",
-                        "scheduler",
-                    ]
-                }
-            },
-            "fargateProfiles": [
-                {
-                    "name": "fp-kube-system",
-                    "selectors": [{"namespace": "kube-system"}],
-                    "subnets": deepcopy(self.vpc.private_subnet_ids),
-                },
-                {
-                    "name": "fp-cluster-autoscaler",
-                    "selectors": [{"namespace": "cluster-autoscaler"}],
-                    "subnets": deepcopy(self.vpc.private_subnet_ids),
-                },
-            ],
-        }
-        return schema
-
     def create_fargate_profile(self, name, namespace, labels=None):
-        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
+        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
         try:
             profile = self.create_fargate_profile_schema(namespace, labels)
         except BaseException as err:
@@ -300,7 +231,7 @@ class Eks(object):
             "minSize": min_size,
             "version": version,
         }
-        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
+        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
         if not os.path.exists(schema_path):
             with open(schema_path, "w") as f:
                 yaml.dump(self.create_nodegroup_schema(nodegroup, instance_type), f)
@@ -384,7 +315,7 @@ class Eks(object):
             ]
         )
         if exit_code == 0:
-            schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
+            schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
             os.unlink(schema_path)
 
     def delete_cluster(self):
@@ -392,7 +323,7 @@ class Eks(object):
         Delete subnet tags and cluster.
         """
         schema_path = (
-            f"config/{self.environment}/{self.region}/{self.cluster_name}/cluster.yaml"
+            f"state/{self.environment}/{self.region}/{self.cluster_name}/cluster.yaml"
         )
         fargate_profiles = self.get_fargate_profiles()
         for p in fargate_profiles:
@@ -434,7 +365,7 @@ class Eks(object):
             },
         )
         logger.info("Removed cluster control plane public endpoint.")
-        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
+        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
         with open(schema_path) as f:
             schema = yaml.safe_load(f)
         schema["vpc"]["clusterEndpoints"]["publicAccess"] = False
@@ -445,7 +376,7 @@ class Eks(object):
         """
         Delete the specified fargateprofile.
         """
-        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
+        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
         if self.dry_run:
             command = f"eksctl delete fargateprofile --name fp-{name} -f {schema_path}"
             logger.info("Dry run enabled, command is: %s", command)
@@ -525,7 +456,7 @@ class Eks(object):
         """
         Delete the specified nodegorup.
         """
-        schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
+        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
         if drain:
             drain_flag = f"--drain=true"
         else:
@@ -558,7 +489,7 @@ class Eks(object):
         Creates a dictionary containing cluster/nodegroup names as keys with k8s versions
         as values.
         """
-        schema_dir = f"config/{self.environment}/{self.region}/{self.cluster_name}"
+        schema_dir = f"state/{self.environment}/{self.region}/{self.cluster_name}"
         if not os.path.exists(schema_dir):
             logger.info("Path to schemas does not exist, please check your inputs")
             sys.exit(1)
@@ -576,7 +507,7 @@ class Eks(object):
         Creates a dictionary containing cluster/nodegroup names as keys with k8s versions
         as values.
         """
-        schema_dir = f"config/{self.environment}/{self.region}/{self.cluster_name}"
+        schema_dir = f"state/{self.environment}/{self.region}/{self.cluster_name}"
         if not os.path.exists(schema_dir):
             logger.info("Path to schemas does not exist, please check your inputs")
             sys.exit(1)
@@ -659,9 +590,7 @@ class Eks(object):
             logger.error("Cluster %s does not exist. Exiting.", self.cluster_name)
             sys.exit(1)
 
-        schema_directory = (
-            f"config/{self.environment}/{self.region}/{self.cluster_name}"
-        )
+        schema_directory = f"state/{self.environment}/{self.region}/{self.cluster_name}"
         schema_path = f"{schema_directory}/cluster-{self.cluster}-{current_version.replace('.', '-')}.yaml"
         schema_path_new = f"{schema_directory}/cluster-{self.cluster}-{new_version.replace('.', '-')}.yaml"
 
@@ -693,7 +622,7 @@ class Eks(object):
             os.unlink(schema_path)
 
     def upgrade_nodegroup(self, name, current_version, new_version, drain):
-        current_schema_path = f"config/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{current_version.replace('.', '-')}.yaml"
+        current_schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{current_version.replace('.', '-')}.yaml"
         current_schema = yaml.safe_load(open(current_schema_path, "r"))
         instance_type = current_schema["managedNodeGroups"][0]["instanceType"]
         desired = current_schema["managedNodeGroups"][0]["desiredCapacity"]
@@ -769,6 +698,8 @@ class Vpc(object):
         self.public_subnets = dict(
             sorted(self.public_subnets_by_az.items(), key=lambda x: x[0])
         )
+        logger.info(f"public subnets by az: {self.public_subnets_by_az}")
+        logger.info(f"private subnets by az: {self.private_subnets_by_az}")
 
     def _get_vpc(self, name):
         """

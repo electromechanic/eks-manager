@@ -2,26 +2,35 @@
 import click
 import functools
 import logging
+from copy import deepcopy
+from pprint import pformat
 
-import manager.aws
-from manager.utils import SpaceSeparatedList, Repo, log_debug_parameters
+from manager.aws import Vpc, Eks
+from manager.utils import (
+    SpaceSeparatedList,
+    KeyValueType,
+    Repo,
+    ConfigProcessor,
+    log_debug_parameters,
+    set_args_in_repo
+)
 
 logging.basicConfig(
     level=logging.INFO,
-    format=("%(asctime)s [%(levelname)s] %(message)s"),
+    format=("%(asctime)s [%(name)s] [%(levelname)s] %(message)s"),
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-
 logger = logging.getLogger(__name__)
-SPACE_SEPARATED_LIST = SpaceSeparatedList()
 
-# Reusable decorator for shared options
+SPACE_SEPARATED_LIST = SpaceSeparatedList()
+KEY_VALUE_TYPE = KeyValueType()
+
+# Reusable decorators for shared options
 def common_options(func):
     @click.option(
         "--cluster-name",
         "-c",
         envvar="EKS_CLUSTER_NAME",
-        default="test",
         help="EKS Cluster name",
     )
     @click.option(
@@ -87,15 +96,28 @@ def common_iamserviceaccount_options(func):
 @click.group()
 @click.option("--debug", is_flag=True, help="Enable debug mode")
 @click.option("--dry-run", is_flag=True, help="Enable dry-run mode")
+@click.option(
+    '-o', '--output-format',
+    'format',
+    default='yaml', 
+    type=click.Choice(['yaml', 'json'], case_sensitive=False),
+    help="Output format: yaml or json"
+)
 @click.pass_context
-def cli(ctx, dry_run, debug):
+def cli(ctx, dry_run, debug, format):
     """CLI main group for managing EKS clusters."""
     if debug:
-        logger.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.getLogger('botocore').setLevel(logging.INFO)
+        logging.getLogger('boto3').setLevel(logging.INFO)
         logger.debug("Debug mode is enabled")
     # Initialize the Repo object and pass it into the context
-    ctx.obj = Repo(dry_run, debug)
-
+    ctx.obj = Repo(dry_run, debug, format)
+    args = locals()
+    for key, value in args.items():
+        if key != "ctx":
+            logger.debug(f"setting repo: {key} = {value}")
+            setattr(ctx.obj, key, value)
 
 @cli.group()
 @common_options
@@ -103,42 +125,173 @@ def cli(ctx, dry_run, debug):
 @log_debug_parameters
 def cluster(repo, cluster_name, environment, region):
     """Manage cluster actions like create, delete, or upgrade."""
-    repo.cluster_name = cluster_name
-    repo.environment = environment
-    repo.region = region
+    set_args_in_repo(repo, locals())
 
 
 @cluster.command()
+@click.option(
+    "-b",
+    "--bootstrap-admin-perms",
+    envvar="EKS_CLUSTER_BOOTSTRAP_ADMIN",
+    default=True,
+    help="Specifies whether or not the cluster creator IAM principal is set as a cluster admin access",
+)
 @click.option(
     "-C",
     "--cluster-admins",
     envvar="EKS_CLUSTER_CLUSTER_ADMINS",
     type=SPACE_SEPARATED_LIST,
-    default=[],
+    default="",
     help="Space seperated list of IAM user names in the target account to give admin access.",
 )
 @click.option(
-    "-k",
+    "-c",
+    "--kubernetes-cidr-block",
+    envvar="EKS_CLUSTER_KUBERNETES_CIDR_BLOCK",
+    default=None,
+    help="CIDR block for kubernetes cluster addresses.",
+)
+@click.option(
+    "-i",
+    "--ip-family",
+    envvar="EKS_CLUSTER_IP_FAMILY",
+    type=click.Choice(["ipv4", "ipv6"], case_sensitive=False),
+    default="ipv4",
+    help="Enable public or private access to EKS api endpoints",
+)
+@click.option(
+    "-V",
     "--kubernetes-version",
+     "version",
     envvar="EKS_CLUSTER_VERSION",
-    default="repo",
     help="EKS Version",
+)
+@click.option(
+    "-K",
+    "--kms_encryption_key",
+    envvar="EKS_CLUSTER_KMS_ENCRYPTION_KEY",
+    default=None,
+    help="KMS encryption key for secrets encryption, can be arn or alias",
+)
+@click.option(
+    "-l",
+    "--logging-types",
+    envvar="EKS_CLUSTER_LOGGING_TYPES",
+    type=SPACE_SEPARATED_LIST,
+    default="",
+    help="""Space seperated list of k8s logging types: 
+            api audit authenticator controllerManager scheduler""",
+)
+@click.option(
+    "-P",
+    "--public-access-cidrs",
+    envvar="EKS_CLUSTER_PUBLIC_ACCESS_CIDRS",
+    type=SPACE_SEPARATED_LIST,
+    default="",
+    help="Space seperated list of CIDR blocks for EKS api endpoint access.",
+)
+@click.option(
+    "-p",
+    "--public-private-access",
+    envvar="EKS_CLUSTER_PUBLIC_PRIVATE_ACCESS",
+    type=click.Choice(["public", "private", "both"], case_sensitive=False),
+    default="both",
+    help="Enable public or private access to EKS api endpoints",
+)
+@click.option(
+    "-r",
+    "--role-arn",
+    envvar="EKS_CLUSTER_ROLE_ARN",
+    default="arn:aws:iam::290730444397:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
+    help="KMS encryption key for secrets encryption, can be arn or alias",
+)
+@click.option(
+    "-S",
+    "--security-group-ids",
+    envvar="EKS_CLUSTER_SECURITY_GROUPS",
+    type=SPACE_SEPARATED_LIST,
+    default="",
+    help="Space seperated list of security group ids for EKS resources.",
+)
+@click.option(
+    "-s",
+    "--support-type",
+    envvar="EKS_CLUSTER_SECURITY_GROUPS",
+    type=click.Choice(["EXTENDED", "STANDARD"], case_sensitive=False),
+    default="STANDARD",
+    help="EKS support type.",
+)
+@click.option(
+    "-t",
+    "--tags",
+    envvar="EKS_CLUSTER_TAGS",
+    type=KEY_VALUE_TYPE,
+    default={},
+    help="""Space seperated list of key/value pairs for EKS cluster.
+            example: key1=value1 key2=value2""",
 )
 @click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
 @click.pass_obj
 @log_debug_parameters
-def create(repo, cluster_admins, kubernetes_version, vpc_name):
+def create(
+    repo,
+    bootstrap_admin_perms,
+    cluster_admins,
+    ip_family,
+    kms_encryption_key,
+    kubernetes_cidr_block,
+    version,
+    logging_types,
+    public_access_cidrs,
+    public_private_access,
+    role_arn,
+    security_group_ids,
+    support_type,
+    tags,
+    vpc_name,
+):
     """Create a new cluster"""
-    kubernetes_version_choice = click.Choice(repo.eks_versions)
-    if kubernetes_version not in repo.eks_versions:
-        logger.info(f"Invalid Kubernetes version: {kubernetes_version}.")
+    logger.debug(f"starting cluster create command")
+    if version not in repo.eks_versions:
+        logger.info(f"Invalid Kubernetes version: {version}.")
         logger.info(f"Supported versions: {', '.join(repo.eks_versions)}")
         return
-    repo.vpc_name = vpc_name
-    vpc = manager.aws.Vpc(repo)
-    eks_manager = manager.aws.Eks(repo, vpc=vpc)
-    eks_manager.create_cluster(kubernetes_version, cluster_admins)
 
+    set_args_in_repo(repo, locals())
+    
+    vpc = Vpc(repo)
+    logger.debug("Vpc instance is: %s", type(vpc))
+
+    repo.version = version
+    repo.private_subnets = deepcopy(vpc.private_subnet_ids)
+    repo.public_subnets = deepcopy(vpc.public_subnet_ids)
+
+    if kms_encryption_key:
+        repo.encrypted_resources = ["secrets"]
+    else:
+        repo.encrypted_resources = []
+
+    if logging_types:
+        repo.logging_enabled = True
+    else:
+        repo.logging_enabled = False
+
+    endpoint_access = {
+        "public": (True, False),
+        "private": (False, True),
+        "both": (True, True),
+    }
+    repo.public_access, repo.private_access = endpoint_access.get(
+        public_private_access.lower(), (False, False)
+    )
+    config = ConfigProcessor(repo)
+    config.cluster(repo)
+    logger.debug(f"config object is a {type(config.cluster_config)}")
+    logger.debug(f"{config.cluster_config}")
+    repo.state_path = f"{repo.environment}/{repo.region}/{repo.cluster_name}/"
+    repo.cluster_filename = f"cluster-{repo.cluster_name}-{repo.version.replace('.', '-')}.{repo.format}"
+    logger.debug(f"state path: {repo.state_path}")
+    config.write_state(repo, config)
 
 @cluster.command()
 @click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
@@ -147,15 +300,16 @@ def create(repo, cluster_admins, kubernetes_version, vpc_name):
 def delete(repo, vpc_name):
     """Delete eks cluster"""
     repo.vpc_name = vpc_name
-    vpc = manager.aws.Vpc(repo)
-    eks_manager = manager.aws.Eks(repo, vpc=vpc)
+    vpc = Vpc(repo)
+    eks_manager = Eks(repo, vpc=vpc)
     eks_manager.delete_cluster()
 
 
 @cluster.command()
 @click.option(
-    "-k",
+    "-V",
     "--kubernetes-version",
+     "version",
     envvar="EKS_KUBERNETES_VERSION",
     default="1.30",
     help="EKS Version",
@@ -173,8 +327,8 @@ def delete(repo, vpc_name):
 def upgrade(repo, kubernetes_version, upgrade_version, vpc_name):
     """Upgrade eks cluster"""
     repo.vpc_name = vpc_name
-    vpc = manager.aws.Vpc(repo)
-    eks_manager = manager.aws.Eks(repo, vpc=vpc)
+    vpc = Vpc(repo)
+    eks_manager = Eks(repo, vpc=vpc)
     eks_manager.upgrade_cluster(kubernetes_version, upgrade_version)
 
 
@@ -216,8 +370,8 @@ def fargateprofile(repo, cluster_name, environment, region):
 def create(repo, name, namespace, labels, vpc_name):
     """Create Fargate Profile/Nodegroup"""
     repo.vpc_name = vpc_name
-    vpc = manager.aws.Vpc(repo)
-    eks_manager = manager.aws.Eks(repo, vpc=vpc)
+    vpc = Vpc(repo)
+    eks_manager = Eks(repo, vpc=vpc)
     eks_manager.create_fargate_profile(name, namespace, labels=labels)
 
 
@@ -233,7 +387,7 @@ def create(repo, name, namespace, labels, vpc_name):
 @log_debug_parameters
 def delete(repo, name):
     """Delete Fargate Profile/Nodegroup"""
-    eks_manager = manager.aws.Eks(repo)
+    eks_manager = Eks(repo)
     eks_manager.delete_fargateprofile(name)
 
 
@@ -290,7 +444,7 @@ def create(
     kubernetes_version,
 ):
     """Create Nodegroup"""
-    eks_manager = manager.aws.Eks(repo)
+    eks_manager = Eks(repo)
     eks_manager.create_nodegroup(
         name,
         instance_class,
@@ -314,7 +468,7 @@ def create(
 @log_debug_parameters
 def delete(repo, name, kubernetes_version, drain):
     """Delete Nodegroup"""
-    eks_manager = manager.aws.Eks(repo)
+    eks_manager = Eks(repo)
     eks_manager.delete_nodegroup(name, kubernetes_version, drain)
 
 
@@ -338,7 +492,7 @@ def delete(repo, name, kubernetes_version, drain):
 @log_debug_parameters
 def upgrade(repo, name, kubernetes_version, upgrade_version, drain):
     """Upgrade Nodegroup"""
-    eks_manager = manager.aws.Eks(repo)
+    eks_manager = Eks(repo)
     eks_manager.upgrade_nodegroup(name, kubernetes_version, upgrade_version, drain)
 
 
@@ -355,7 +509,7 @@ def upgrade(repo, name, kubernetes_version, upgrade_version, drain):
 @log_debug_parameters
 def upgrade_ami(repo, name, kubernetes_version, upgrade_version):
     """Upgrade Nodegroup AMI"""
-    eks_manager = manager.aws.Eks(repo)
+    eks_manager = Eks(repo)
     eks_manager.upgrade_nodegroup_ami(name, kubernetes_version, upgrade_version)
 
 
@@ -382,7 +536,7 @@ def iamserviceaccount(repo, cluster_name, environment, region):
 @log_debug_parameters
 def create(repo, name, namespace, iam_policy_arn):
     """Create IAM service account"""
-    eks_manager = manager.aws.Eks(repo)
+    eks_manager = Eks(repo)
     eks_manager.create_iam_service_account(
         name, namespace, iam_policy_arn=iam_policy_arn
     )
@@ -394,7 +548,7 @@ def create(repo, name, namespace, iam_policy_arn):
 @log_debug_parameters
 def delete(repo, name, namespace):
     """Create IAM service account"""
-    eks_manager = manager.aws.Eks(repo)
+    eks_manager = Eks(repo)
     eks_manager.delete_iam_service_account(name, namespace)
 
 
@@ -415,7 +569,7 @@ def adminusermap(repo, cluster_name, environment, region):
 @log_debug_parameters
 def create(repo, name):
     """Create IAM service account"""
-    eks_manager = manager.aws.Eks(repo)
+    eks_manager = Eks(repo)
     eks_manager.create_admin_user(name)
 
 
@@ -425,15 +579,16 @@ def create(repo, name):
 @log_debug_parameters
 def delete(repo, name):
     """Create IAM service account"""
-    eks_manager = manager.aws.Eks(repo)
+    eks_manager = Eks(repo)
     eks_manager.delete_admin_user(name)
 
 
 @cli.command()
 @common_options
 @click.option(
-    "-k",
+    "-V",
     "--kubernetes-version",
+    "version",
     envvar="EKS_KUBERNETES_VERSION",
     default="1.30",
     help="EKS Version",
@@ -460,16 +615,17 @@ def upgrade_all(
     cluster_name,
     environment,
     region,
-    kubernetes_version,
+    version,
     upgrade_version,
     vpc_name,
     drain,
 ):
-    """Create IAM admin user mapping"""
+    """Upgrade version for all resources"""
     repo.cluster_name = cluster_name
     repo.environment = environment
     repo.region = region
     repo.vpc_name = vpc_name
-    vpc = manager.aws.Vpc(repo)
-    eks_manager = manager.aws.Eks(repo, vpc=vpc)
-    eks_manager.upgrade_all(kubernetes_version, upgrade_version, drain)
+    repo.version = version
+    vpc = Vpc(repo)
+    eks_manager = Eks(repo, vpc=vpc)
+    eks_manager.upgrade_all(version, upgrade_version, drain)
