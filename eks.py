@@ -42,7 +42,11 @@ def common_options(func):
         help="Environment",
     )
     @click.option(
-        "--region", "-r", envvar="EKS_REGION", default="us-east-1", help="AWS Region"
+        "--region",
+        "-r",
+        envvar="EKS_REGION",
+        default="us-east-1",
+        help="AWS Region",
     )
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -51,22 +55,15 @@ def common_options(func):
     return wrapper
 
 
-def common_nodegroup_options(func):
+def common_drain_option(func):
     @click.option(
-        "-n",
-        "--name",
-        envvar="EKS_NODEGROUP_NAME",
-        default="test",
-        help="Nodegroup name",
+        "--drain",
+        "-D",
+        is_flag=True,
+        envvar="EKS_NODEGROUP_DRAIN",
+        help="Flag to drain nodegroup during upgrade",
     )
-    @click.option(
-        "-k",
-        "--kubernetes-version",
-        envvar="EKS_KUBERNETES_VERSION",
-        default="1.30",
-        help="EKS Version",
-    )
-    @functools.wraps(func)  # Keeps the original function signature and docs
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
 
@@ -75,14 +72,14 @@ def common_nodegroup_options(func):
 
 def common_iamserviceaccount_options(func):
     @click.option(
-        "-n",
         "--name",
+        "-n",
         envvar="EKS_IAMSERVICEACCOUNT_NAME",
         help="IAM service account name",
     )
     @click.option(
-        "-N",
         "--namespace",
+        "-N",
         required=True,
         envvar="EKS_IAMSERVICEACCOUNT_NAMESPACE",
         help="Namespace for the IAM service account",
@@ -94,9 +91,93 @@ def common_iamserviceaccount_options(func):
     return wrapper
 
 
+def common_nodegroup_options(func):
+    @click.option(
+        "--name",
+        "-n",
+        envvar="EKS_NODEGROUP_NAME",
+        default="test",
+        help="Nodegroup name",
+    )
+    @click.option(
+        "--kubernetes-version",
+        "-k",
+        envvar="EKS_KUBERNETES_VERSION",
+        default="1.30",
+        help="EKS Version",
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def common_upgrade_options(func):
+    @click.option(
+        "--kubernetes-version",
+        "-V",
+        envvar="EKS_KUBERNETES_VERSION",
+        default="1.30",
+        required=True,
+        help="Kubernetes version for the cluster or nodegroup",
+    )
+    @click.option(
+        "--upgrade-version",
+        "-u",
+        envvar="EKS_KUBERNETES_UPGRADE_VERSION",
+        default=None,
+        required=False,
+        help="Optional Kubernetes version to upgrade to",
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def common_upgrade_option(func):
+    @click.option(
+        "--upgrade-version",
+        "-u",
+        envvar="EKS_KUBERNETES_UPGRADE_VERSION",
+        default="1.30",
+        help="EKS Upgrade Version",
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def common_vpc_option(func):
+    @click.option(
+        "--vpc-name",
+        "-v",
+        envvar="EKS_VPC_NAME",
+        required=True,
+        help="VPC name",
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
 @click.group()
-@click.option("--debug", is_flag=True, help="Enable debug mode")
-@click.option("--dry-run", is_flag=True, help="Enable dry-run mode")
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Enable debug mode",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Enable dry-run mode",
+)
 @click.option(
     "--organization",
     "-O",
@@ -106,8 +187,8 @@ def common_iamserviceaccount_options(func):
     help="Organization name",
 )
 @click.option(
-    "-o",
     "--output-format",
+    "-o",
     "format",
     default="yaml",
     type=click.Choice(["yaml", "json"], case_sensitive=False),
@@ -141,107 +222,107 @@ def cluster(repo, cluster_name, environment, region):
 
 @cluster.command()
 @click.option(
-    "-b",
     "--bootstrap-admin-perms",
+    "-b",
     envvar="EKS_CLUSTER_BOOTSTRAP_ADMIN",
     default=True,
     help="Specifies whether or not the cluster creator IAM principal is set as a cluster admin access",
 )
 @click.option(
-    "-C",
     "--cluster-admins",
+    "-C",
     envvar="EKS_CLUSTER_CLUSTER_ADMINS",
     type=SPACE_SEPARATED_LIST,
     default="",
-    help="Space seperated list of IAM user names in the target account to give admin access.",
+    help="Space separated list of IAM user names in the target account to give admin access.",
 )
 @click.option(
-    "-c",
     "--kubernetes-cidr-block",
+    "-c",
     envvar="EKS_CLUSTER_KUBERNETES_CIDR_BLOCK",
     default=None,
     help="CIDR block for kubernetes cluster addresses.",
 )
 @click.option(
-    "-i",
     "--ip-family",
+    "-i",
     envvar="EKS_CLUSTER_IP_FAMILY",
     type=click.Choice(["ipv4", "ipv6"], case_sensitive=False),
     default="ipv4",
     help="Enable public or private access to EKS api endpoints",
 )
 @click.option(
-    "-V",
     "--kubernetes-version",
+    "-V",
     "version",
     envvar="EKS_CLUSTER_VERSION",
     help="EKS Version",
 )
 @click.option(
+    "--kms-encryption-key",
     "-K",
-    "--kms_encryption_key",
     envvar="EKS_CLUSTER_KMS_ENCRYPTION_KEY",
     default=None,
     help="KMS encryption key for secrets encryption, can be arn or alias",
 )
 @click.option(
-    "-l",
     "--logging-types",
+    "-l",
     envvar="EKS_CLUSTER_LOGGING_TYPES",
     type=SPACE_SEPARATED_LIST,
     default="",
-    help="""Space seperated list of k8s logging types: 
+    help="""Space separated list of k8s logging types: 
             api audit authenticator controllerManager scheduler""",
 )
 @click.option(
-    "-P",
     "--public-access-cidrs",
+    "-P",
     envvar="EKS_CLUSTER_PUBLIC_ACCESS_CIDRS",
     type=SPACE_SEPARATED_LIST,
     default="",
-    help="Space seperated list of CIDR blocks for EKS api endpoint access.",
+    help="Space separated list of CIDR blocks for EKS api endpoint access.",
 )
 @click.option(
-    "-p",
     "--public-private-access",
+    "-p",
     envvar="EKS_CLUSTER_PUBLIC_PRIVATE_ACCESS",
     type=click.Choice(["public", "private", "both"], case_sensitive=False),
     default="both",
     help="Enable public or private access to EKS api endpoints",
 )
 @click.option(
-    "-r",
     "--role-arn",
+    "-r",
     envvar="EKS_CLUSTER_ROLE_ARN",
     default="arn:aws:iam::290730444397:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
     help="KMS encryption key for secrets encryption, can be arn or alias",
 )
 @click.option(
-    "-S",
     "--security-group-ids",
+    "-S",
     envvar="EKS_CLUSTER_SECURITY_GROUPS",
     type=SPACE_SEPARATED_LIST,
     default="",
-    help="Space seperated list of security group ids for EKS resources.",
+    help="Space separated list of security group ids for EKS resources.",
 )
 @click.option(
-    "-s",
     "--support-type",
+    "-s",
     envvar="EKS_CLUSTER_SECURITY_GROUPS",
     type=click.Choice(["EXTENDED", "STANDARD"], case_sensitive=False),
     default="STANDARD",
     help="EKS support type.",
 )
 @click.option(
-    "-t",
     "--tags",
+    "-t",
     envvar="EKS_CLUSTER_TAGS",
     type=KEY_VALUE_TYPE,
     default={},
-    help="""Space seperated list of key/value pairs for EKS cluster.
+    help="""Space separated list of key/value pairs for EKS cluster.
             example: key1=value1 key2=value2""",
 )
-@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
+@common_vpc_option
 @click.pass_obj
 @log_debug_parameters
 def create(
@@ -323,7 +404,7 @@ def create(
 
 
 @cluster.command()
-@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
+@common_vpc_option
 @click.pass_obj
 @log_debug_parameters
 def delete(repo, vpc_name):
@@ -335,22 +416,8 @@ def delete(repo, vpc_name):
 
 
 @cluster.command()
-@click.option(
-    "-V",
-    "--kubernetes-version",
-    "version",
-    envvar="EKS_KUBERNETES_VERSION",
-    default="1.30",
-    help="EKS Version",
-)
-@click.option(
-    "-u",
-    "--upgrade-version",
-    envvar="EKS_KUBERNETES_UPGRADE_VERSION",
-    default="1.30",
-    help="EKS Upgrade Version",
-)
-@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
+@common_upgrade_options
+@common_vpc_option
 @click.pass_obj
 @log_debug_parameters
 def upgrade(repo, kubernetes_version, upgrade_version, vpc_name):
@@ -374,26 +441,26 @@ def fargateprofile(repo, cluster_name, environment, region):
 
 @fargateprofile.command()
 @click.option(
-    "-n",
     "--name",
+    "-n",
     required=True,
     envvar="EKS_FARGATEPROFILE_NAME",
     help="Name for the fargate profile/nodegroup",
 )
 @click.option(
-    "-N",
     "--namespace",
+    "-N",
     required=True,
     envvar="EKS_FARGATEPROFILE_NAMESPACE",
     help="Namespace for the fargate profile/nodegroup",
 )
 @click.option(
-    "-l",
     "--labels",
+    "-l",
     envvar="EKS_FARGATEPROFILE_LABELS",
     help="Labels for the fargate profile/nodegroup",
 )
-@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
+@common_vpc_option
 @click.pass_obj
 @log_debug_parameters
 def create(repo, name, namespace, labels, vpc_name):
@@ -406,8 +473,8 @@ def create(repo, name, namespace, labels, vpc_name):
 
 @fargateprofile.command()
 @click.option(
-    "-n",
     "--name",
+    "-n",
     required=True,
     envvar="EKS_FARGATEPROFILE_NAME",
     help="Name for the fargate profile/nodegroup",
@@ -434,29 +501,29 @@ def nodegroup(repo, cluster_name, environment, region):
 @nodegroup.command()
 @common_nodegroup_options
 @click.option(
-    "-i",
     "--instance-class",
+    "-i",
     envvar="EKS_NODEGROUP_INSTANCE_CLASS",
     default="t4g.medium",
     help="Instance class",
 )
 @click.option(
-    "-d",
     "--desired-capacity",
+    "-d",
     envvar="EKS_NODEGROUP_DESIRED_CAPACITY",
     default=0,
     help="Desired Capacity",
 )
 @click.option(
-    "-M",
     "--max-nodes",
+    "-M",
     envvar="EKS_NODEGROUP_MAXIMUM_NODES",
     default=0,
     help="Maximum nodes",
 )
 @click.option(
-    "-m",
     "--min-nodes",
+    "-m",
     envvar="EKS_NODEGROUP_MINIMUM_NODES",
     default=0,
     help="Minimum nodes",
@@ -486,13 +553,7 @@ def create(
 
 @nodegroup.command()
 @common_nodegroup_options
-@click.option(
-    "-D",
-    "--drain",
-    is_flag=True,
-    envvar="EKS_NODEGROUP_DRAIN",
-    help="Flag to drain nodegroup during upgrade",
-)
+@common_drain_option
 @click.pass_obj
 @log_debug_parameters
 def delete(repo, name, kubernetes_version, drain):
@@ -502,21 +563,15 @@ def delete(repo, name, kubernetes_version, drain):
 
 
 @nodegroup.command()
-@common_nodegroup_options
+@common_drain_option
 @click.option(
-    "-u",
-    "--upgrade-version",
-    envvar="EKS_KUBERNETES_UPGRADE_VERSION",
-    default="1.30",
-    help="EKS Upgrade Version",
+    "--name",
+    "-n",
+    required=True,
+    envvar="EKS_NODEGROUP_NAME",
+    help="Name of the nodegroup",
 )
-@click.option(
-    "-D",
-    "--drain",
-    is_flag=True,
-    envvar="EKS_NODEGROUP_DRAIN",
-    help="Flag to drain nodegroup during upgrade",
-)
+@common_upgrade_options
 @click.pass_obj
 @log_debug_parameters
 def upgrade(repo, name, kubernetes_version, upgrade_version, drain):
@@ -526,14 +581,14 @@ def upgrade(repo, name, kubernetes_version, upgrade_version, drain):
 
 
 @nodegroup.command()
-@common_nodegroup_options
 @click.option(
-    "-u",
-    "--upgrade-version",
-    envvar="EKS_KUBERNETES_UPGRADE_VERSION",
-    default="1.30",
-    help="EKS Upgrade Version",
+    "--name",
+    "-n",
+    required=True,
+    envvar="EKS_NODEGROUP_NAME",
+    help="Name of the nodegroup",
 )
+@common_upgrade_options
 @click.pass_obj
 @log_debug_parameters
 def upgrade_ami(repo, name, kubernetes_version, upgrade_version):
@@ -556,8 +611,8 @@ def iamserviceaccount(repo, cluster_name, environment, region):
 @iamserviceaccount.command()
 @common_iamserviceaccount_options
 @click.option(
-    "-P",
     "--iam-policy-arn",
+    "-P",
     envvar="EKS_IAMSERVICEACCOUNT_POLICYARN",
     help="IAM service account policy ARN",
 )
@@ -576,7 +631,7 @@ def create(repo, name, namespace, iam_policy_arn):
 @click.pass_obj
 @log_debug_parameters
 def delete(repo, name, namespace):
-    """Create IAM service account"""
+    """Delete IAM service account"""
     eks_manager = Eks(repo)
     eks_manager.delete_iam_service_account(name, namespace)
 
@@ -585,59 +640,55 @@ def delete(repo, name, namespace):
 @common_options
 @click.pass_obj
 @log_debug_parameters
-def adminusermap(repo, cluster_name, environment, region):
+def admin_identiymap(repo, cluster_name, environment, region):
     """Manage IAM service accounts, like create, delete."""
     repo.cluster_name = cluster_name
     repo.environment = environment
     repo.region = region
 
 
-@adminusermap.command()
-@click.option("-n", "--name", envvar="EKS_ADMINUSERMAP_NAME", help="IAM user name")
+@admin_identiymap.command()
+@click.option(
+    "--name",
+    "-n",
+    envvar="EKS_ADMINUSERMAP_NAME",
+    help="IAM user name",
+)
+@click.option(
+    "--iam-user-arn",
+    "-a",
+    envvar="EKS_IAMUSERMAP_ARN_NAME",
+    help="IAM user name",
+)
 @click.pass_obj
 @log_debug_parameters
 def create(repo, name):
     """Create IAM service account"""
     eks_manager = Eks(repo)
     repo.cluster_info = eks_manager.get_cluster_info()
-    eks_manager.create_admin_user(name)
+    eks_manager.create_admin_usermap(name)
 
 
-@adminusermap.command()
-@click.option("-n", "--name", envvar="EKS_ADMINUSERMAP_NAME", help="IAM user name")
+@admin_identiymap.command()
+@click.option(
+    "--name",
+    "-n",
+    envvar="EKS_ADMINUSERMAP_NAME",
+    help="IAM user name",
+)
 @click.pass_obj
 @log_debug_parameters
 def delete(repo, name):
     """Create IAM service account"""
     eks_manager = Eks(repo)
-    eks_manager.delete_admin_user(name)
+    eks_manager.delete_admin_usermap(name)
 
 
 @cli.command()
 @common_options
-@click.option(
-    "-V",
-    "--kubernetes-version",
-    "version",
-    envvar="EKS_KUBERNETES_VERSION",
-    default="1.30",
-    help="EKS Version",
-)
-@click.option(
-    "-u",
-    "--upgrade-version",
-    envvar="EKS_KUBERNETES_UPGRADE_VERSION",
-    default="1.30",
-    help="EKS Upgrade Version",
-)
-@click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
-@click.option(
-    "-D",
-    "--drain",
-    is_flag=True,
-    envvar="EKS_NODEGROUP_DRAIN",
-    help="Flag to drain nodegroup during upgrade",
-)
+@common_drain_option
+@common_upgrade_options
+@common_vpc_option
 @click.pass_obj
 @log_debug_parameters
 def upgrade_all(
