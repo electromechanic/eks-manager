@@ -124,99 +124,28 @@ class Eks(object):
         urllib3_logger = logging.getLogger("urllib3")
         previous_level = urllib3_logger.level
         urllib3_logger.setLevel(logging.DEBUG)
-        self.cluster_info = {
-            "ResponseMetadata": {
-                "RequestId": "a5945644-ddc0-4abf-ad72-ff01fea6c3d1",
-                "HTTPStatusCode": 200,
-                "HTTPHeaders": {
-                    "date": "Thu, 17 Oct 2024 17:22:59 GMT",
-                    "content-type": "application/json",
-                    "content-length": "1292",
-                    "connection": "keep-alive",
-                    "x-amzn-requestid": "a5945644-ddc0-4abf-ad72-ff01fea6c3d1",
-                    "access-control-allow-origin": "*",
-                    "access-control-allow-headers": "*,Authorization,Date,X-Amz-Date,X-Amz-Security-Token,X-Amz-Target,content-type,x-amz-content-sha256,x-amz-user-agent,x-amzn-platform-id,x-amzn-trace-id",
-                    "x-amz-apigw-id": "fzgt1EjvIAMEgXQ=",
-                    "access-control-allow-methods": "GET,HEAD,PUT,POST,DELETE,OPTIONS",
-                    "access-control-expose-headers": "x-amzn-errortype,x-amzn-errormessage,x-amzn-trace-id,x-amzn-requestid,x-amz-apigw-id,date",
-                    "x-amzn-trace-id": "Root=1-671147f1-3529f7d42828a5f044afb808",
+        self.cluster_info = self.eks.create_cluster(**config.cluster_config)
+        waiter = self.eks.get_waiter("cluster_active")
+        logger.info("Waiting for EKS cluster to become active...")
+        try:
+            waiter.wait(
+                name=self.cluster_name,
+                WaiterConfig={
+                    "Delay": 30,  # seconds between each pole
+                    "MaxAttempts": 40,  # max attempts (20 mins)
                 },
-                "RetryAttempts": 0,
-            },
-            "cluster": {
-                "name": "test2",
-                "arn": "arn:aws:eks:us-east-1:290730444397:cluster/test2",
-                "createdAt": datetime.datetime(
-                    2024, 10, 17, 13, 22, 59, 552000, tzinfo=tzlocal()
-                ),
-                "version": "1.29",
-                "roleArn": "arn:aws:iam::290730444397:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
-                "resourcesVpcConfig": {
-                    "subnetIds": [
-                        "subnet-0d1f86103ab9ce83c",
-                        "subnet-0eaa654c78bb87a38",
-                        "subnet-02bafaec63db63bc3",
-                        "subnet-059677775d8dca44d",
-                        "subnet-058617bca8e9e5f18",
-                        "subnet-04807e8e98d911149",
-                    ],
-                    "securityGroupIds": [],
-                    "vpcId": "vpc-065c711ee6db4f263",
-                    "endpointPublicAccess": True,
-                    "endpointPrivateAccess": True,
-                    "publicAccessCidrs": ["0.0.0.0/0"],
-                },
-                "kubernetesNetworkConfig": {
-                    "serviceIpv4Cidr": "172.20.0.0/16",
-                    "ipFamily": "ipv4",
-                },
-                "logging": {
-                    "clusterLogging": [
-                        {
-                            "types": [
-                                "api",
-                                "audit",
-                                "authenticator",
-                                "controllerManager",
-                                "scheduler",
-                            ],
-                            "enabled": False,
-                        }
-                    ]
-                },
-                "status": "CREATING",
-                "certificateAuthority": {},
-                "platformVersion": "eks.17",
-                "tags": {},
-                "accessConfig": {
-                    "bootstrapClusterCreatorAdminPermissions": True,
-                    "authenticationMode": "API_AND_CONFIG_MAP",
-                },
-                "upgradePolicy": {"supportType": "STANDARD"},
-            },
-        }
-        # self.cluster_info = self.eks.create_cluster(**config.cluster_config)
-        # waiter = self.eks.get_waiter("cluster_active")
-        # logger.info("Waiting for EKS cluster to become active...")
-        # try:
-        #     waiter.wait(
-        #         name=self.cluster_name,
-        #         WaiterConfig={
-        #             "Delay": 30,  # seconds between each pole
-        #             "MaxAttempts": 40,  # max attempts (20 mins)
-        #         },
-        #     )
-        #     logger.info("Cluster is now active!")
-        #     logger.debug(f"cluster create return {pformat(self.cluster_info)}")
-        #     urllib3_logger.setLevel(previous_level)
-        # except Exception as e:
-        #     logger.error(f"Error waiting for the cluster to become active: {e}")
-        #     urllib3_logger.setLevel(previous_level)
-        #     sys.exit(1)
+            )
+            logger.info("Cluster is now active!")
+            logger.debug(f"cluster create return {pformat(self.cluster_info)}")
+            urllib3_logger.setLevel(previous_level)
+        except Exception as e:
+            logger.error(f"Error waiting for the cluster to become active: {e}")
+            urllib3_logger.setLevel(previous_level)
+            sys.exit(1)
 
-        # self.create_admin_users(config.cluster_admins)
-        # self.update_control_plane_sg(vpc)
-        # self.delete_cluster_public_endpoint()
+        self.create_admin_users(config.cluster_admins)
+        self.update_control_plane_sg(vpc)
+        self.delete_cluster_public_endpoint()
 
     def create_fargate_profile(self, name, namespace, labels=None):
         schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
