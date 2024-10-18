@@ -79,7 +79,7 @@ class Eks(object):
 
         response = self.eks.describe_cluster(self.cluster_name)
         cluster_info = response["cluster"]
-        k8s = kclient.CoreV1Api()
+        k8s = k8sclient.CoreV1Api()
         config_map = k8s.read_namespaced_config_map("aws-auth", "kube-system")
         aws_auth_data = config_map.data["mapRoles"]
         new_role_mapping = f"""
@@ -141,11 +141,13 @@ class Eks(object):
         except Exception as e:
             logger.error(f"Error waiting for the cluster to become active: {e}")
             urllib3_logger.setLevel(previous_level)
-            sys.exit(1)
+            raise 
+        finally:
+            urllib3_logger.setLevel(previous_level)
 
-        self.create_admin_users(config.cluster_admins)
-        self.update_control_plane_sg(vpc)
-        self.delete_cluster_public_endpoint()
+        # self.create_admin_users(config.cluster_admins)
+        # self.update_control_plane_sg(vpc)
+        # self.delete_cluster_public_endpoint()
 
     def create_fargate_profile(self, name, namespace, labels=None):
         schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
@@ -684,7 +686,8 @@ class k8s(object):
             "authorization": "Bearer "
             + repo.cluster_info["kube_config"]["users"][0]["user"]["token"]
         }
-        eks.Configuration.set_default(kclient_config)
+        k8sclient.Configuration.set_default(kclient_config)
+        self.kclient = k8sclient.CoreV1Api()
 
     def create_kube_config_from_eks(self, cluster_info):
         # Extract necessary fields
