@@ -4,15 +4,16 @@ import functools
 import logging
 from copy import deepcopy
 from pprint import pformat
+import sys
 
-from manager.aws import Vpc, Eks
+from manager.aws import Vpc, Eks, k8s
 from manager.utils import (
     SpaceSeparatedList,
     KeyValueType,
     Repo,
     ConfigProcessor,
     log_debug_parameters,
-    set_args_in_repo
+    set_args_in_repo,
 )
 
 logging.basicConfig(
@@ -97,19 +98,28 @@ def common_iamserviceaccount_options(func):
 @click.option("--debug", is_flag=True, help="Enable debug mode")
 @click.option("--dry-run", is_flag=True, help="Enable dry-run mode")
 @click.option(
-    '-o', '--output-format',
-    'format',
-    default='yaml', 
-    type=click.Choice(['yaml', 'json'], case_sensitive=False),
-    help="Output format: yaml or json"
+    "--organization",
+    "-O",
+    "org",
+    envvar="EKS_ORGNIZATION",
+    default="default",
+    help="Organization name",
+)
+@click.option(
+    "-o",
+    "--output-format",
+    "format",
+    default="yaml",
+    type=click.Choice(["yaml", "json"], case_sensitive=False),
+    help="Output format: yaml or json",
 )
 @click.pass_context
-def cli(ctx, dry_run, debug, format):
+def cli(ctx, dry_run, debug, format, org):
     """CLI main group for managing EKS clusters."""
     if debug:
         logging.getLogger().setLevel(logging.DEBUG)
-        logging.getLogger('botocore').setLevel(logging.INFO)
-        logging.getLogger('boto3').setLevel(logging.INFO)
+        logging.getLogger("botocore").setLevel(logging.INFO)
+        logging.getLogger("boto3").setLevel(logging.INFO)
         logger.debug("Debug mode is enabled")
     # Initialize the Repo object and pass it into the context
     ctx.obj = Repo(dry_run, debug, format)
@@ -118,6 +128,7 @@ def cli(ctx, dry_run, debug, format):
         if key != "ctx":
             logger.debug(f"setting repo: {key} = {value}")
             setattr(ctx.obj, key, value)
+
 
 @cli.group()
 @common_options
@@ -162,7 +173,7 @@ def cluster(repo, cluster_name, environment, region):
 @click.option(
     "-V",
     "--kubernetes-version",
-     "version",
+    "version",
     envvar="EKS_CLUSTER_VERSION",
     help="EKS Version",
 )
@@ -258,7 +269,7 @@ def create(
         return
 
     set_args_in_repo(repo, locals())
-    
+
     vpc = Vpc(repo)
     logger.debug("Vpc instance is: %s", type(vpc))
 
@@ -288,10 +299,28 @@ def create(
     config.cluster(repo)
     logger.debug(f"config object is a {type(config.cluster_config)}")
     logger.debug(f"{config.cluster_config}")
-    repo.state_path = f"{repo.environment}/{repo.region}/{repo.cluster_name}/"
-    repo.cluster_filename = f"cluster-{repo.cluster_name}-{repo.version.replace('.', '-')}.{repo.format}"
+    repo.state_path = (
+        f"{repo.org}/{repo.environment}/{repo.region}/{repo.cluster_name}/"
+    )
+    repo.cluster_filename = (
+        f"cluster-{repo.cluster_name}-{repo.version.replace('.', '-')}.{repo.format}"
+    )
     logger.debug(f"state path: {repo.state_path}")
-    config.write_state(repo, config)
+    if repo.dry_run:
+        config.write_state(repo, config)
+    else:
+        vpc.verify_private_elb_tags()
+        vpc.verify_public_elb_tags()
+        eks = Eks(repo)
+        if eks.check_cluster_exists() is True:
+            logger.error("Cluster %s already exists.", config.name)
+            sys.exit(1)
+        vpc.create_cluster_tags(repo.cluster_name)
+        logger.debug(f"config is:\n{config}")
+        eks.create_cluster(config)
+        logger.debug(f"eks.cluster_info: {eks.cluster_info}")
+        config.write_state(repo, eks.cluster_info)
+
 
 @cluster.command()
 @click.option("-v", "--vpc-name", envvar="EKS_VPC_NAME", required=True, help="VPC name")
@@ -301,7 +330,7 @@ def delete(repo, vpc_name):
     """Delete eks cluster"""
     repo.vpc_name = vpc_name
     vpc = Vpc(repo)
-    eks_manager = Eks(repo, vpc=vpc)
+    eks_manager = Eks(repo)
     eks_manager.delete_cluster()
 
 
@@ -309,7 +338,7 @@ def delete(repo, vpc_name):
 @click.option(
     "-V",
     "--kubernetes-version",
-     "version",
+    "version",
     envvar="EKS_KUBERNETES_VERSION",
     default="1.30",
     help="EKS Version",
@@ -570,6 +599,7 @@ def adminusermap(repo, cluster_name, environment, region):
 def create(repo, name):
     """Create IAM service account"""
     eks_manager = Eks(repo)
+    repo.cluster_info = eks_manager.get_cluster_info()
     eks_manager.create_admin_user(name)
 
 

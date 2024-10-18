@@ -1,4 +1,5 @@
-import importlib.resources
+import base64
+import datetime
 import json
 import logging
 import os
@@ -6,8 +7,9 @@ import shutil
 import sys
 import time
 from copy import deepcopy
+from dateutil.tz import tzlocal
 from pprint import pformat
-
+from kubernetes import client as k8sclient, config as k8sconfig
 
 import boto3
 import yaml
@@ -18,22 +20,18 @@ logger = logging.getLogger(__name__)  # TODO: add more logging
 
 
 class Eks(object):
-    def __init__(self, args, config=None, vpc=None):
+    def __init__(self, repo, config=None):
         """
         Init the object.
         """
-        self.environment = args.environment
-        self.cluster_name = args.cluster_name
-        self.region = args.region
-        if vpc:
-            self.vpc = vpc
-        # TODO: put these in a list then combine so a missing value wont affect name hyphenation
-        # self.cluster_name = f"cluster-{self.cluster}-{args.environment}-{args.region}"
+        self.environment = repo.environment
+        self.cluster_name = repo.cluster_name
+        self.region = repo.region
 
-        self.dry_run = args.dry_run
+        self.dry_run = repo.dry_run
         self.eks = boto3.client("eks", region_name=self.region)
         self.cfn = boto3.client("cloudformation", region_name=self.region)
-        self.eks_client = boto3.client("eks", region_name=self.region)
+
         sts = boto3.client("sts")
         self.iam = boto3.client("iam")
         self.environment_id = sts.get_caller_identity().get("Account")
@@ -77,6 +75,23 @@ class Eks(object):
             ]
         )
 
+    def create_admin_user_id_maps(self, config):
+
+        response = self.eks.describe_cluster(self.cluster_name)
+        cluster_info = response["cluster"]
+        k8s = kclient.CoreV1Api()
+        config_map = k8s.read_namespaced_config_map("aws-auth", "kube-system")
+        aws_auth_data = config_map.data["mapRoles"]
+        new_role_mapping = f"""
+        - rolearn: arn:aws:iam::123456789012:user/MyEKSClusterUser
+        username: my-eks-role
+        groups:
+            - system:masters
+        """
+        updated_aws_auth_data = aws_auth_data + new_role_mapping
+        config_map.data["mapRoles"] = updated_aws_auth_data
+        k8s.patch_namespaced_config_map("aws-auth", "kube-system", config_map)
+
     def create_admin_user_schema(self, user):
         """"""
         user_arn = f"arn:aws:iam::{self.environment_id}:user/{user}"
@@ -102,35 +117,105 @@ class Eks(object):
         for user in admins:
             self.create_admin_user(user)
 
-    def create_cluster(self, config, vpc):
+    def create_cluster(self, config):
         """
         Validate all cluster prereqs and create cluster.
         """
-        vpc.verify_private_elb_tags()
-        vpc.verify_public_elb_tags()
-
-        if self.check_cluster_exists() is True:
-            logger.error("Cluster %s already exists.", config.name)
-            sys.exit(1)
-        vpc.create_cluster_tags(self.cluster)
-
-        cluster = self.eks.create_cluster(**cluster_params)
-        waiter = self.eks.get_waiter("cluster_active")
-        logger.info("Waiting for EKS cluster to become active...")
-        try:
-            waiter.wait(
-                name=config.name,
-                WaiterConfig={
-                    "Delay": 30,  # seconds between each pole
-                    "MaxAttempts": 40,  # max attempts (20 mins)
+        urllib3_logger = logging.getLogger("urllib3")
+        previous_level = urllib3_logger.level
+        urllib3_logger.setLevel(logging.DEBUG)
+        self.cluster_info = {
+            "ResponseMetadata": {
+                "RequestId": "a5945644-ddc0-4abf-ad72-ff01fea6c3d1",
+                "HTTPStatusCode": 200,
+                "HTTPHeaders": {
+                    "date": "Thu, 17 Oct 2024 17:22:59 GMT",
+                    "content-type": "application/json",
+                    "content-length": "1292",
+                    "connection": "keep-alive",
+                    "x-amzn-requestid": "a5945644-ddc0-4abf-ad72-ff01fea6c3d1",
+                    "access-control-allow-origin": "*",
+                    "access-control-allow-headers": "*,Authorization,Date,X-Amz-Date,X-Amz-Security-Token,X-Amz-Target,content-type,x-amz-content-sha256,x-amz-user-agent,x-amzn-platform-id,x-amzn-trace-id",
+                    "x-amz-apigw-id": "fzgt1EjvIAMEgXQ=",
+                    "access-control-allow-methods": "GET,HEAD,PUT,POST,DELETE,OPTIONS",
+                    "access-control-expose-headers": "x-amzn-errortype,x-amzn-errormessage,x-amzn-trace-id,x-amzn-requestid,x-amz-apigw-id,date",
+                    "x-amzn-trace-id": "Root=1-671147f1-3529f7d42828a5f044afb808",
                 },
-            )
-            logger.info("Cluster is now active!")
-        except Exception as e:
-            logger.error(f"Error waiting for the cluster to become active: {e}")
-            sys.exit(1)
-        self.create_admin_users(config.cluster_admins)
-        self.update_control_plane_sg()
+                "RetryAttempts": 0,
+            },
+            "cluster": {
+                "name": "test2",
+                "arn": "arn:aws:eks:us-east-1:290730444397:cluster/test2",
+                "createdAt": datetime.datetime(
+                    2024, 10, 17, 13, 22, 59, 552000, tzinfo=tzlocal()
+                ),
+                "version": "1.29",
+                "roleArn": "arn:aws:iam::290730444397:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
+                "resourcesVpcConfig": {
+                    "subnetIds": [
+                        "subnet-0d1f86103ab9ce83c",
+                        "subnet-0eaa654c78bb87a38",
+                        "subnet-02bafaec63db63bc3",
+                        "subnet-059677775d8dca44d",
+                        "subnet-058617bca8e9e5f18",
+                        "subnet-04807e8e98d911149",
+                    ],
+                    "securityGroupIds": [],
+                    "vpcId": "vpc-065c711ee6db4f263",
+                    "endpointPublicAccess": True,
+                    "endpointPrivateAccess": True,
+                    "publicAccessCidrs": ["0.0.0.0/0"],
+                },
+                "kubernetesNetworkConfig": {
+                    "serviceIpv4Cidr": "172.20.0.0/16",
+                    "ipFamily": "ipv4",
+                },
+                "logging": {
+                    "clusterLogging": [
+                        {
+                            "types": [
+                                "api",
+                                "audit",
+                                "authenticator",
+                                "controllerManager",
+                                "scheduler",
+                            ],
+                            "enabled": False,
+                        }
+                    ]
+                },
+                "status": "CREATING",
+                "certificateAuthority": {},
+                "platformVersion": "eks.17",
+                "tags": {},
+                "accessConfig": {
+                    "bootstrapClusterCreatorAdminPermissions": True,
+                    "authenticationMode": "API_AND_CONFIG_MAP",
+                },
+                "upgradePolicy": {"supportType": "STANDARD"},
+            },
+        }
+        # self.cluster_info = self.eks.create_cluster(**config.cluster_config)
+        # waiter = self.eks.get_waiter("cluster_active")
+        # logger.info("Waiting for EKS cluster to become active...")
+        # try:
+        #     waiter.wait(
+        #         name=self.cluster_name,
+        #         WaiterConfig={
+        #             "Delay": 30,  # seconds between each pole
+        #             "MaxAttempts": 40,  # max attempts (20 mins)
+        #         },
+        #     )
+        #     logger.info("Cluster is now active!")
+        #     logger.debug(f"cluster create return {pformat(self.cluster_info)}")
+        #     urllib3_logger.setLevel(previous_level)
+        # except Exception as e:
+        #     logger.error(f"Error waiting for the cluster to become active: {e}")
+        #     urllib3_logger.setLevel(previous_level)
+        #     sys.exit(1)
+
+        # self.create_admin_users(config.cluster_admins)
+        # self.update_control_plane_sg(vpc)
         # self.delete_cluster_public_endpoint()
 
     def create_fargate_profile(self, name, namespace, labels=None):
@@ -484,6 +569,11 @@ class Eks(object):
         if exit_code == 0:
             os.unlink(schema_path)
 
+    def get_cluster_info(self):
+        self.cluster_info = self.eks.describe_cluster(self.cluster_name)
+        logger.debug(f"cluster info:\n{pformat(self.cluster_info)}")
+        return self.cluster_info
+
     def get_fargate_profiles(self):
         """
         Creates a dictionary containing cluster/nodegroup names as keys with k8s versions
@@ -520,19 +610,19 @@ class Eks(object):
                 versions[f"{n[0]}-{n[1]}"] = ver
         return versions
 
-    def update_control_plane_sg(self):
+    def update_control_plane_sg(self, vpc):
         """
         Apply 10/8 entry for 443 traffic to controlplane so VPN access can communicate to private
         endpoint.
         """
-        cluster_info = self.eks_client.describe_cluster(name=self.cluster_name)
-        response = self.vpc.client.describe_security_groups(
+        cluster_info = self.get_cluster_info()
+        response = vpc.client.describe_security_groups(
             GroupIds=cluster_info["cluster"]["resourcesVpcConfig"]["securityGroupIds"],
             Filters=[
                 {
                     "Name": "tag:Name",
                     "Values": [
-                        f"eksctl-{self.cluster_name}-cluster/ControlPlaneSecurityGroup"
+                        f"{self.cluster_name}-cluster/ControlPlaneSecurityGroup"
                     ],
                 }
             ],
@@ -546,7 +636,7 @@ class Eks(object):
                     "IpProtocol": "tcp",
                     "IpRanges": [
                         {
-                            "CidrIp": "10.0.0.0/8",
+                            "CidrIp": vpc.cidr_block,
                             "Description": "VPN connectivity to cluster control plane.",
                         },
                     ],
@@ -561,7 +651,7 @@ class Eks(object):
                 update_response["ResponseMetadata"].to_dict(),
             )
         logger.info(
-            "Added 10.0.0.0/8 to the controlplane security group %s", controlplane_sg
+            f"Added {vpc.cidr_block} to the controlplane security group {controlplane_sg}"
         )
 
     def upgrade_all(self, current_version, new_version, drain):
@@ -653,6 +743,62 @@ class Eks(object):
         )
 
 
+class k8s(object):
+    def __init__(self, repo, eks=None):
+
+        kclient_config = k8sclient.Configuration()
+        kclient_config.host = repo.cluster_info["kube_config"]["clusters"][0][
+            "cluster"
+        ]["server"]
+        kclient_config.ssl_ca_cert = "/path/to/ca_cert.pem"
+        kclient_config.api_key = {
+            "authorization": "Bearer "
+            + repo.cluster_info["kube_config"]["users"][0]["user"]["token"]
+        }
+        eks.Configuration.set_default(kclient_config)
+
+    def create_kube_config_from_eks(self, cluster_info):
+        # Extract necessary fields
+        api_server = cluster_info["endpoint"]
+        cluster_name = cluster_info["name"]
+        ca_data = cluster_info["certificateAuthority"]["data"]
+
+        # Decode base64 encoded certificate authority data
+        ca_cert = base64.b64decode(ca_data).decode("utf-8")
+
+        # Manually create a Kubernetes configuration
+        kube_config = {
+            "apiVersion": "v1",
+            "kind": "Config",
+            "clusters": [
+                {
+                    "cluster": {
+                        "server": api_server,
+                        "certificate-authority-data": ca_data,
+                    },
+                    "name": cluster_name,
+                }
+            ],
+            "contexts": [
+                {
+                    "context": {"cluster": cluster_name, "user": "eks-user"},
+                    "name": "eks-context",
+                }
+            ],
+            "current-context": "eks-context",
+            "users": [
+                {
+                    "name": "eks-user",
+                    "user": {
+                        "token": "your-bearer-token"  # You'll need to authenticate the user
+                    },
+                }
+            ],
+        }
+
+        return kube_config
+
+
 class Vpc(object):
     def __init__(self, args):
         """
@@ -710,7 +856,10 @@ class Vpc(object):
             vpc = self.ec2.Vpc(
                 self.client.describe_vpcs(Filters=filters).get("Vpcs")[0]
             )
-            return vpc.id.get("VpcId")
+            logger.debug(f"vpc info = {pformat(vpc)}")
+            self.vpc_id = vpc.id.get("VpcId")
+            self.cidr_block = vpc.id.get("CidrBlock")
+            return self.vpc_id
         except IndexError as err:
             logger.error(f"VPC: {name} does not exist, {err}")
             sys.exit(1)

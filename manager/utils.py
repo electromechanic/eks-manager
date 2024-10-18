@@ -1,3 +1,4 @@
+import inspect
 import io
 import logging
 import json
@@ -9,6 +10,8 @@ import yaml
 
 import click
 
+from datetime import datetime, timezone
+from dateutil.tz import tzlocal
 from functools import wraps
 from pprint import pformat
 
@@ -16,68 +19,197 @@ from .template import Render
 
 logger = logging.getLogger(__name__)
 
+
+class Repo(object):
+    def __init__(
+        self,
+        format,
+        dry_run=False,
+        debug=False,
+    ):
+        self.dry_run = dry_run
+        self.debug = debug
+        self.eks_versions = self._get_eks_versions()
+        self.format = format
+        self.home = os.path.abspath(".")
+
+        self.environment = ""
+        self.region = ""
+        self.cluster_name = ""
+        self.version = ""
+        self.state_path = f"{self.environment}/{self.region}/{self.cluster_name}/"
+
+        self.state = "local"
+
+        logger.debug(f"Repo object created with dry_run={dry_run}, debug={debug}")
+
+    def _get_eks_versions(self):
+        """Get supported versions of eks based on eksctl version."""
+        returncode, stdout, stderr = run_command(
+            [
+                "/usr/local/bin/eksctl",
+                "version",
+                "-o",
+                "json",
+            ]
+        )
+
+        # Check if the command failed
+        if returncode != 0:
+            logger.error(
+                f"Failed to get EKS versions. Return code: {returncode}, stderr: {stderr}"
+            )
+            return []
+
+        try:
+            stdout_dict = json.loads(stdout)
+            versions = stdout_dict.get("EKSServerSupportedVersions", [])
+            logger.debug(f"Supported EKS versions: {versions}")
+            return versions
+        except json.JSONDecodeError as err:
+            logger.error(f"Failed to parse JSON from eksctl output: {err}")
+            return []
+
+
 class ConfigProcessor(object):
     def __init__(self, repo):
         """
         Init the object.
         """
-        self.repo = repo
         self.template = Render(repo)
+        self.repo = repo
 
-    def cluster(self, config):
-        """detect config format and pass to corresponding method"""
+    class DateTimeEncoder(json.JSONEncoder):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # Register the YAML representer for datetime objects during initialization
+            yaml.add_representer(datetime, self.encode_for_yaml)
+
+        @staticmethod
+        def encode_for_json(obj):
+            """Convert datetime objects to ISO 8601 strings for JSON."""
+            if isinstance(obj, datetime):
+                return obj.astimezone(timezone.utc).isoformat()
+            return obj
+
+        @staticmethod
+        def encode_for_yaml(dumper, data):
+            """Convert datetime objects to ISO 8601 strings for YAML."""
+            return dumper.represent_str(data.astimezone(timezone.utc).isoformat())
+
+        def default(self, obj):
+            """Overriding default method to use JSON datetime handling."""
+            return self.encode_for_json(obj)
+
+    def _detect_type(self, config):
         if isinstance(config, Repo):
-            self._cluster_cli(config)
-            return
+            logger.debug(f"config is a class")
+            return "repo"
         try:
             json.loads(config)
-            return "JSON string"
+            return "json"
         except (json.JSONDecodeError, TypeError):
             pass  # Not a valid JSON string
 
         try:
             yaml.safe_load(config)
-            return "YAML string"
+            return "yaml"
         except (yaml.YAMLError, TypeError, AttributeError):
             pass
 
-        raise ValueError("Config is not a Repo object, valid JSON, or valid YAML.")
-        
-    def _cluster_cli(self, repo):
+    def cluster(self, config):
+        """detect config format and pass to corresponding method"""
+
+        config_type = self._detect_type(config)
+        logger.debug(f"config_type is {config_type}")
+        if config_type == "repo":
+            self._cluster_cli(config)
+            return
+        if config_type == "json":
+            pass
+        if config_type == "yaml":
+            pass
+
+        raise ValueError(
+            f"Config is a {type(config)} not a Repo object, valid JSON, or valid YAML."
+        )
+
+    def _cluster_cli(self, config):
         """Build cluster config from CLI repo values"""
-        self.repo.all_subnets = repo.private_subnets + repo.public_subnets
-        cluster_config = self.template.cluster_config()
-        self.cluster_config = cluster_config
-        self.cluster_config_json = json.dumps(cluster_config, indent=4)
-        self.cluster_config_yaml = yaml.dump(cluster_config, default_flow_style=False)
-    
+        config.all_subnets = config.private_subnets + config.public_subnets
+        self.template.cluster_eks()
+        logger.debug(f"subnets: \n{pformat(config.all_subnets)}")
+        self.cluster_config = self.template.cluster_config
+        logger.debug(f"cluster_config is {type(self.cluster_config)}")
+        self.cluster_config_json = json.dumps(self.cluster_config, indent=4)
+        logger.debug(f"cluster_config_json is: {self.cluster_config_json}")
+        self.cluster_config_yaml = yaml.dump(
+            self.cluster_config, default_flow_style=False
+        )
+        logger.debug(f"cluster_config_yaml is: {self.cluster_config_yaml}")
+
+    def construct_state(self, config, repo):
+        """Add state metadata to config"""
+        # Replace 'ResponseMetadata' with 'metadata'
+        logger.debug(f"construct state input: {config}")
+        if "ResponseMetadata" in config:
+            response_metadata = config.pop("ResponseMetadata")
+            # Prepare metadata
+            metadata = {
+                "timestamp": datetime.now(
+                    timezone.utc
+                ).isoformat(),  # Current GMT time as ISO string
+                "organization": repo.org,  # Take organization from the repo object
+                "version": 1,  # Initial version value
+            }
+
+            # Add the new metadata to the config
+            config["metadata"] = metadata
+            logger.debug(f"construct state metadata+config: {pformat(config)}")
+
+        return config
+
+    def iam_user(self, name):
+        self.iam_user_config = self.template.iam_user_config(name)
+        self.iam_user_config_json = json.dumps(self.iam_user_config, indent=4)
+        self.iam_user_config_yaml = yaml.dump(
+            self.iam_user_config, default_flow_style=False
+        )
+
     def write_state(self, repo, config):
-        if repo.state == 'local':
+
+        if repo.state == "local":
+            config = self.construct_state(config, repo)
             self._write_local_state(repo, config)
             return
-        if repo.state == 's3':
-            logger.info('write to s3')
+        if repo.state == "s3":
+            logger.info("write to s3")
             return
-        if repo.state == 'mongo':
-            logger.info('write to mongo')
+        if repo.state == "mongo":
+            logger.info("write to mongo")
             return
 
-    
     def _write_local_state(self, repo, config):
         if repo.dry_run:
-            state_prefix = 'dry-run'
+            state_prefix = "dry-run"
         else:
-            state_prefix = 'state'
+            state_prefix = "state"
         path = f"{state_prefix}/{repo.state_path}"
+
+        self.cluster_state_json = json.dumps(config, indent=4, cls=self.DateTimeEncoder)
+        self.cluster_state_yaml = yaml.dump(config, default_flow_style=False)
         if not os.path.isdir(path):
             os.makedirs(path)
         # if not os.path.exists(f"{path}/"):
         with open(f"{path}/{repo.cluster_filename}", "w") as f:
-            if repo.format == 'json':
-                f.write(config.cluster_config_json)
-            elif repo.format == 'yaml':
-                f.write(config.cluster_config_yaml)
-            logger.info(f"Saved cluster sate file to { f'{path}/{repo.cluster_filename}'}")
+            if repo.format == "json":
+                f.write(self.cluster_state_json)
+            elif repo.format == "yaml":
+                f.write(self.cluster_state_yaml)
+            logger.info(
+                f"Saved cluster sate file to { f'{path}/{repo.cluster_filename}'}"
+            )
+
 
 class KeyValueType(click.ParamType):
     name = "key-value pair"
@@ -108,57 +240,6 @@ class SpaceSeparatedList(click.ParamType):
             return value.split()
         except AttributeError:
             self.fail(f"{value} is not a valid space-separated string", param, ctx)
-
-
-class Repo(object):
-    def __init__(
-        self,
-        format,
-        dry_run=False,
-        debug=False,
-    ):
-        self.dry_run = dry_run
-        self.debug = debug
-        self.eks_versions = self._get_eks_versions()
-        self.format = format
-        self.home = os.path.abspath(".")
-
-        self.environment = ""
-        self.region = ""
-        self.cluster_name = ""
-        self.version = ""
-        self.state_path = f"{self.environment}/{self.region}/{self.cluster_name}/"
-
-        self.state = 'local'
-
-        logger.debug(f"Repo object created with dry_run={dry_run}, debug={debug}")
-
-    def _get_eks_versions(self):
-        """Get supported versions of eks based on eksctl version."""
-        returncode, stdout, stderr = run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "version",
-                "-o",
-                "json",
-            ]
-        )
-
-        # Check if the command failed
-        if returncode != 0:
-            logger.error(
-                f"Failed to get EKS versions. Return code: {returncode}, stderr: {stderr}"
-            )
-            return []
-
-        try:
-            stdout_dict = json.loads(stdout)
-            versions = stdout_dict.get("EKSServerSupportedVersions", [])
-            logger.debug(f"Supported EKS versions: {versions}")
-            return versions
-        except json.JSONDecodeError as err:
-            logger.error(f"Failed to parse JSON from eksctl output: {err}")
-            return []
 
 
 def gen_password(length, numbers=True, special_characters=True):
@@ -235,6 +316,7 @@ def run_command(command, noout=None):
             logger.error("Command error: %s", stderr)
     return process.returncode, stdout, stderr
 
+
 def set_args_in_repo(repo, args):
     for key, value in args.items():
         if key != "repo":  # Skip repo
@@ -243,6 +325,7 @@ def set_args_in_repo(repo, args):
                 setattr(repo, key, value)
             else:
                 logger.warn(f"Skipping unsupported type for {key}: {type(value)}")
+
 
 def stringify_yaml(yaml_data):
     """
