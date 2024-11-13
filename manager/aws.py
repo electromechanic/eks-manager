@@ -5,7 +5,15 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 import time
+import urllib.parse
+
+import time
+import kubernetes.client
+from kubernetes.client.rest import ApiException
+
+from botocore.signers import RequestSigner
 from copy import deepcopy
 from dateutil.tz import tzlocal
 from pprint import pformat
@@ -13,6 +21,11 @@ from kubernetes import client as k8sclient, config as k8sconfig
 
 import boto3
 import yaml
+
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+from botocore.credentials import Credentials
+from botocore.signers import RequestSigner
 
 from .utils import run_command
 
@@ -27,14 +40,17 @@ class Eks(object):
         self.environment = repo.environment
         self.cluster_name = repo.cluster_name
         self.region = repo.region
-
         self.dry_run = repo.dry_run
+
         self.eks = boto3.client("eks", region_name=self.region)
+        _session = boto3.Session()
+        self.eks_client = _session.client('eks', region_name=self.region)
         self.cfn = boto3.client("cloudformation", region_name=self.region)
 
-        sts = boto3.client("sts")
+        self.sts = boto3.client("sts")
+        self.sts_client = _session.client('sts')
         self.iam = boto3.client("iam")
-        self.environment_id = sts.get_caller_identity().get("Account")
+        self.environment_id = self.sts.get_caller_identity().get("Account")
 
         if config:
             with open(config, "r") as f:
@@ -78,14 +94,14 @@ class Eks(object):
     def create_admin_user_id_maps(self, config):
 
         response = self.eks.describe_cluster(self.cluster_name)
-        cluster_info = response["cluster"]
+        config.cluster_info = response["cluster"]
         k8s = k8sclient.CoreV1Api()
         config_map = k8s.read_namespaced_config_map("aws-auth", "kube-system")
         aws_auth_data = config_map.data["mapRoles"]
         new_role_mapping = f"""
-        - rolearn: arn:aws:iam::123456789012:user/MyEKSClusterUser
-        username: my-eks-role
-        groups:
+        - userearn: arn:aws:iam::290730444397:user/admin
+          username: admin
+          groups:
             - system:masters
         """
         updated_aws_auth_data = aws_auth_data + new_role_mapping
@@ -501,7 +517,7 @@ class Eks(object):
             os.unlink(schema_path)
 
     def get_cluster_info(self):
-        self.cluster_info = self.eks.describe_cluster(self.cluster_name)
+        self.cluster_info = self.eks.describe_cluster(name=self.cluster_name)
         logger.debug(f"cluster info:\n{pformat(self.cluster_info)}")
         return self.cluster_info
 
@@ -540,6 +556,57 @@ class Eks(object):
                 n = s.split("-")
                 versions[f"{n[0]}-{n[1]}"] = ver
         return versions
+
+    def get_bearer_token(self):
+        """
+        Generate a Bearer token for Kubernetes API authentication using AWS STS.
+        """
+        # This code was taken from here:
+        # https://github.com/aws/aws-cli/blob/master/awscli/customizations/eks/get_token.py
+        # if any issues happen with this method check for changes here ^^^
+        try:
+            url_timeout = 60  # Presigned URL timeout in seconds
+            token_prefix = 'k8s-aws-v1.'
+            k8s_aws_id_header = 'x-k8s-aws-id'
+
+            # register event handlers
+            self.sts_client.meta.events.register(
+                'provide-client-params.sts.GetCallerIdentity',
+                lambda params, context, **kwargs: context.update(
+                    {k8s_aws_id_header: params.pop(k8s_aws_id_header)}
+                ),
+            )
+            self.sts_client.meta.events.register(
+                'before-sign.sts.GetCallerIdentity',
+                lambda request, **kwargs: request.headers.add_header(
+                    k8s_aws_id_header, request.context[k8s_aws_id_header]
+                )
+            )
+
+            # generate presigned URL
+            presigned_url = self.sts_client.generate_presigned_url(
+                'get_caller_identity',
+                Params={k8s_aws_id_header: self.cluster_name},
+                ExpiresIn=url_timeout,
+                HttpMethod='GET',
+            )
+            logger.debug(f"Generated signed URL: {presigned_url}")
+
+            # encode URL to k8s bearer token
+            token = token_prefix + base64.urlsafe_b64encode(
+                presigned_url.encode('utf-8')
+            ).decode('utf-8').rstrip('=')
+
+            logger.debug(f"Generated Bearer token: {token}")
+            return token
+
+        except Exception as e:
+            logger.error(f"Failed to generate Bearer token: {e}")
+            raise
+
+
+
+    
 
     def update_control_plane_sg(self, vpc):
         """
@@ -674,21 +741,109 @@ class Eks(object):
         )
 
 
+class IAM(object):
+    def __init__(self, repo, config=None):
+        """
+        Init the object.
+        """
+        self.repo = repo
+        self.iam = boto3.client('iam')
+
+    def create_cluster_service_role(self):
+        try:
+            eks_trust_policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": "eks.amazonaws.com"
+                        },
+                        "Action": "sts:AssumeRole"
+                    }
+                ]
+            }
+            role_name = f"{self.repo.cluster_name}-cluster-service-role"
+            managed_policies = [
+                "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+                "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
+            ]
+            response = self.iam.create_role(
+                RoleName=role_name,
+                AssumeRolePolicyDocument=json.dumps(eks_trust_policy),
+                Description="EKS Cluster Service Role"
+            )
+            for policy_arn in managed_policies:
+                self.iam.attach_role_policy(
+                    RoleName=role_name,
+                    PolicyArn=policy_arn
+                )
+            
+            return response['Role']['Arn']
+        except self.iam.exceptions.EntityAlreadyExistsException:
+            print(f"Role '{role_name}' already exists.")
+        except Exception as e:
+            print(f"Error creating role: {e}")
+
+
+
 class k8s(object):
     def __init__(self, repo, eks=None):
 
-        kclient_config = k8sclient.Configuration()
-        kclient_config.host = repo.cluster_info["kube_config"]["clusters"][0][
-            "cluster"
-        ]["server"]
-        kclient_config.ssl_ca_cert = "/path/to/ca_cert.pem"
-        kclient_config.api_key = {
-            "authorization": "Bearer "
-            + repo.cluster_info["kube_config"]["users"][0]["user"]["token"]
-        }
-        k8sclient.Configuration.set_default(kclient_config)
-        self.kclient = k8sclient.CoreV1Api()
+        api_endpoint = repo.cluster_info["cluster"]["endpoint"]
+        ca_data = repo.cluster_info["cluster"]["certificateAuthority"]["data"]
+        ca_cert = base64.b64decode(ca_data)
+        # token = eks.eks.get_token(clusterName=repo.cluster_name)['token']
 
+        with tempfile.NamedTemporaryFile(delete=False) as ca_cert_file:
+            ca_cert_file.write(ca_cert)
+            ca_cert_path = ca_cert_file.name
+
+        token = eks.get_bearer_token()
+
+        kclient_config = k8sclient.Configuration()
+        kclient_config.api_key_prefix['authorization'] = 'Bearer'
+        kclient_config.api_key['authorization'] = token
+        logger.debug(f"bearer token: {kclient_config.api_key}")
+        kclient_config.host = api_endpoint
+        logger.debug(f"api endpoint: {kclient_config.host}")
+        kclient_config.ssl_ca_cert = ca_cert_path
+        logger.debug(f"ca cert path: {kclient_config.ssl_ca_cert}")
+        logger.debug(f"cert: \n {ca_cert}")
+
+        kclient_config.verify_ssl = True
+
+        client_config = k8sclient.Configuration.set_default(kclient_config)
+        logger.debug(f"client config: {client_config}")
+
+        self.kclient = k8sclient.CoreV1Api()
+        pods = self.kclient.list_namespaced_pod(namespace='default')
+
+        namespaces = self.kclient.list_namespace()
+        for ns in namespaces.items:
+            print(f"Namespace: {ns.metadata.name}")
+
+        pods = self.kclient.list_namespaced_pod(namespace='kube-system')
+        for pod in pods.items:
+            print(f"Pod Name: {pod.metadata.name}")
+        # with k8sclient.ApiClient(client_config) as api_client:
+        #     # Create an instance of the API class
+        #     self.kclient = kubernetes.client.WellKnownApi(api_client)
+            
+        #     try:
+        #         api_response = self.kclient.get_service_account_issuer_open_id_configuration()
+        #         logger.info(api_response)
+        #     except ApiException as e:
+        #         logger.info("Exception when calling WellKnownApi->get_service_account_issuer_open_id_configuration: %s\n" % e)
+            
+
+        pods = self.kclient.list_namespaced_pod(namespace="default")
+
+        # Print the names of the pods
+        for pod in pods.items:
+            print(f"Pod name: {pod.metadata.name}")
+    
+    
     def create_kube_config_from_eks(self, cluster_info):
         # Extract necessary fields
         api_server = cluster_info["endpoint"]

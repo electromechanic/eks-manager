@@ -6,7 +6,7 @@ from copy import deepcopy
 from pprint import pformat
 import sys
 
-from manager.aws import Vpc, Eks, k8s
+from manager.aws import Vpc, Eks, k8s, IAM
 from manager.utils import (
     SpaceSeparatedList,
     KeyValueType,
@@ -259,7 +259,7 @@ def cluster(repo, cluster_name, environment, region):
 @click.option("--role-arn",
     "-r",
     envvar="EKS_CLUSTER_ROLE_ARN",
-    default="arn:aws:iam::290730444397:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
+    default=None,
     help="KMS encryption key for secrets encryption, can be arn or alias",
 )
 @click.option("--security-group-ids",
@@ -320,7 +320,9 @@ def create(
     repo.version = version
     repo.private_subnets = deepcopy(vpc.private_subnet_ids)
     repo.public_subnets = deepcopy(vpc.public_subnet_ids)
-
+    if not role_arn:
+            iam = IAM(repo)
+            repo.role_arn = iam.create_cluster_service_role()
     if kms_encryption_key:
         repo.encrypted_resources = ["secrets"]
     else:
@@ -604,14 +606,14 @@ def delete(repo, name, namespace):
 @common_options
 @click.pass_obj
 @log_debug_parameters
-def admin_identiymap(repo, cluster_name, environment, region):
+def admin_identitymap(repo, cluster_name, environment, region):
     """Manage IAM service accounts, like create, delete."""
     repo.cluster_name = cluster_name
     repo.environment = environment
     repo.region = region
 
 
-@admin_identiymap.command()
+@admin_identitymap.command()
 # fmt: off
 @click.option("--iam-user-arn",
     "-a",
@@ -626,14 +628,15 @@ def admin_identiymap(repo, cluster_name, environment, region):
 # fmt: on
 @click.pass_obj
 @log_debug_parameters
-def create(repo, name):
+def map_user(repo, name, iam_user_arn):
     """Create IAM service account"""
     eks_manager = Eks(repo)
     repo.cluster_info = eks_manager.get_cluster_info()
-    eks_manager.create_admin_usermap(name)
+    k8s_manager = k8s(repo, eks_manager)
+    # eks_manager.create_admin_user_id_maps(repo)
 
 
-@admin_identiymap.command()
+@admin_identitymap.command()
 # fmt: off
 @click.option("--name",
     "-n",
@@ -643,7 +646,7 @@ def create(repo, name):
 # fmt: on
 @click.pass_obj
 @log_debug_parameters
-def delete(repo, name):
+def delete_user(repo, name):
     """Create IAM service account"""
     eks_manager = Eks(repo)
     eks_manager.delete_admin_usermap(name)
