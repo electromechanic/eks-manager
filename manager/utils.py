@@ -33,14 +33,6 @@ class Repo(object):
         self.format = format
         self.home = os.path.abspath(".")
 
-        self.environment = ""
-        self.region = ""
-        self.cluster_name = ""
-        self.version = ""
-        self.state_path = f"{self.environment}/{self.region}/{self.cluster_name}/"
-
-        self.state = "local"
-
         logger.debug(f"Repo object created with dry_run={dry_run}, debug={debug}")
 
     def _get_eks_versions(self):
@@ -123,8 +115,8 @@ class ConfigProcessor(object):
         config_type = self._detect_type(config)
         logger.debug(f"config_type is {config_type}")
         if config_type == "repo":
-            self._cluster_cli(config)
-            return
+            self.cluster_config = self._cluster_cli(config)
+            return self.cluster_config
         if config_type == "json":
             pass
         if config_type == "yaml":
@@ -134,12 +126,11 @@ class ConfigProcessor(object):
             f"Config is a {type(config)} not a Repo object, valid JSON, or valid YAML."
         )
 
-    def _cluster_cli(self, config):
+    def _cluster_cli(self, repo):
         """Build cluster config from CLI repo values"""
-        config.all_subnets = config.private_subnets + config.public_subnets
-        self.template.cluster_eks()
-        logger.debug(f"subnets: \n{pformat(config.all_subnets)}")
-        self.cluster_config = self.template.cluster_config
+        repo.all_subnets = repo.private_subnets + repo.public_subnets
+        self.cluster_config = self.template.cluster_eks()
+        logger.debug(f"subnets: \n{pformat(repo.all_subnets)}")
         logger.debug(f"cluster_config is {type(self.cluster_config)}")
         self.cluster_config_json = json.dumps(self.cluster_config, indent=4)
         logger.debug(f"cluster_config_json is: {self.cluster_config_json}")
@@ -147,6 +138,8 @@ class ConfigProcessor(object):
             self.cluster_config, default_flow_style=False
         )
         logger.debug(f"cluster_config_yaml is: {self.cluster_config_yaml}")
+        return self.cluster_config
+
 
     def construct_state(self, config, repo):
         """Add state metadata to config"""
@@ -175,6 +168,40 @@ class ConfigProcessor(object):
         self.iam_user_config_yaml = yaml.dump(
             self.iam_user_config, default_flow_style=False
         )
+
+    def delete_state(self, state_path):
+        if self.repo.state == "local":
+            os.unlink(state_path)
+            return
+        if repo.state == "s3":
+            logger.info("write to s3")
+            return
+        if repo.state == "mongo":
+            logger.info("write to mongo")
+            return
+
+
+    def fetch_state(self, obj_type, name):
+
+        if self.repo.state == "local":
+            state, file_path = self._read_local_state(obj_type, name)
+            return state, file_path
+        if self.repo.state == "s3":
+            logger.info("read from s3")
+            return
+        if self.repo.state == "mongo":
+            logger.info("read from mongo")
+            return
+        
+    def _read_local_state(self, obj_type, name):
+        file_path = f"{self.repo.home}/state/{self.repo.state_path}/{obj_type}-{name}.{self.repo.format}"
+        try:
+            with open(file_path, 'r') as state_file:
+                state = yaml.safe_load(state_file)
+                return state, file_path
+        except Exception as err:
+            logger.error(f"error loading state: {err}")
+            return None
 
     def write_state(self, repo, config):
 

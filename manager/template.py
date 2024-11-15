@@ -54,6 +54,7 @@ class Render(object):
             ] = self.repo.public_access_cidrs
 
         self.cluster_config = cluster_config
+        return self.cluster_config
 
     def iam_user_config(self):
         iam_user_config = {"UserName": self.repo.iam_user_name}

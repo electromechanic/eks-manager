@@ -13,6 +13,7 @@ import time
 import kubernetes.client
 from kubernetes.client.rest import ApiException
 
+import botocore
 from botocore.signers import RequestSigner
 from copy import deepcopy
 from dateutil.tz import tzlocal
@@ -44,11 +45,11 @@ class Eks(object):
 
         self.eks = boto3.client("eks", region_name=self.region)
         _session = boto3.Session()
-        self.eks_client = _session.client('eks', region_name=self.region)
+        self.eks_client = _session.client("eks", region_name=self.region)
         self.cfn = boto3.client("cloudformation", region_name=self.region)
 
         self.sts = boto3.client("sts")
-        self.sts_client = _session.client('sts')
+        self.sts_client = _session.client("sts")
         self.iam = boto3.client("iam")
         self.environment_id = self.sts.get_caller_identity().get("Account")
 
@@ -140,7 +141,7 @@ class Eks(object):
         urllib3_logger = logging.getLogger("urllib3")
         previous_level = urllib3_logger.level
         urllib3_logger.setLevel(logging.DEBUG)
-        self.cluster_info = self.eks.create_cluster(**config.cluster_config)
+        self.cluster_info = self.eks.create_cluster(**config)
         waiter = self.eks.get_waiter("cluster_active")
         logger.info("Waiting for EKS cluster to become active...")
         try:
@@ -157,9 +158,10 @@ class Eks(object):
         except Exception as e:
             logger.error(f"Error waiting for the cluster to become active: {e}")
             urllib3_logger.setLevel(previous_level)
-            raise 
+            raise
         finally:
             urllib3_logger.setLevel(previous_level)
+            return self.cluster_info
 
         # self.create_admin_users(config.cluster_admins)
         # self.update_control_plane_sg(vpc)
@@ -350,41 +352,70 @@ class Eks(object):
             schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
             os.unlink(schema_path)
 
-    def delete_cluster(self):
+    def delete_cluster(self, repo):
         """
         Delete subnet tags and cluster.
         """
-        schema_path = (
-            f"state/{self.environment}/{self.region}/{self.cluster_name}/cluster.yaml"
-        )
-        fargate_profiles = self.get_fargate_profiles()
-        for p in fargate_profiles:
-            self.delete_fargateprofile(p)
-        if self.dry_run:
-            command = f"eksctl delete cluster --name {self.cluster_name} --region {self.region}"
-            logger.info("Dry run enabled, command is %s", command)
-            return
+        # TODO: include deletion of subnet tags
+        try:
+            response = self.eks.delete_cluster(name=repo.cluster_name)
+            logger.info(f"Cluster deletion initiated: {response}")
 
-        self.vpc.delete_cluster_tags(self.cluster_name)
-        exit_code = run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "delete",
-                "cluster",
-                "--name",
-                self.cluster_name,
-                "--region",
-                self.region,
-            ]
-        )
-        if exit_code == 0:
-            try:
-                shutil.rmtree("/".join(schema_path.split("/")[:-1]))
-            except FileNotFoundError:
-                logger.error(
-                    "Directory in config not found for the cluster %s",
-                    self.cluster_name,
-                )
+            waiter_delay = 20  # seconds
+            max_attempts = 30  # maximum attempts to wait
+            for attempt in range(max_attempts):
+                try:
+                    self.eks.describe_cluster(name=repo.cluster_name)
+                    logger.info(
+                        f"Waiting for cluster {repo.cluster_name} to be deleted..."
+                    )
+                    time.sleep(waiter_delay)
+                except self.eks.exceptions.ResourceNotFoundException:
+                    print(f"Cluster {repo.cluster_name} successfully deleted.")
+                    return
+                except botocore.exceptions.ClientError as err:
+                    print(f"Unexpected error while waiting: {err}")
+                    raise
+
+            logger.info(
+                f"Cluster {repo.cluster_name} deletion timed out after {max_attempts * waiter_delay} seconds."
+            )
+        except self.eks.exceptions.ResourceNotFoundException:
+            logger.error(f"Cluster {repo.cluster_name} not found.")
+        except self.eks.exceptions.ClientError as err:
+            logger.error(f"An error occurred: {err}")
+
+        # schema_path = (
+        #     f"state/{self.environment}/{self.region}/{self.cluster_name}/cluster.yaml"
+        # )
+        # fargate_profiles = self.get_fargate_profiles()
+        # for p in fargate_profiles:
+        #     self.delete_fargateprofile(p)
+        # if self.dry_run:
+        #     command = f"eksctl delete cluster --name {self.cluster_name} --region {self.region}"
+        #     logger.info("Dry run enabled, command is %s", command)
+        #     return
+
+        # self.vpc.delete_cluster_tags(self.cluster_name)
+        # exit_code = run_command(
+        #     [
+        #         "/usr/local/bin/eksctl",
+        #         "delete",
+        #         "cluster",
+        #         "--name",
+        #         self.cluster_name,
+        #         "--region",
+        #         self.region,
+        #     ]
+        # )
+        # if exit_code == 0:
+        #     try:
+        #         shutil.rmtree("/".join(schema_path.split("/")[:-1]))
+        #     except FileNotFoundError:
+        #         logger.error(
+        #             "Directory in config not found for the cluster %s",
+        #             self.cluster_name,
+        #         )
 
     def delete_cluster_public_endpoint(self):
         """
@@ -566,36 +597,36 @@ class Eks(object):
         # if any issues happen with this method check for changes here ^^^
         try:
             url_timeout = 60  # Presigned URL timeout in seconds
-            token_prefix = 'k8s-aws-v1.'
-            k8s_aws_id_header = 'x-k8s-aws-id'
+            token_prefix = "k8s-aws-v1."
+            k8s_aws_id_header = "x-k8s-aws-id"
 
             # register event handlers
             self.sts_client.meta.events.register(
-                'provide-client-params.sts.GetCallerIdentity',
+                "provide-client-params.sts.GetCallerIdentity",
                 lambda params, context, **kwargs: context.update(
                     {k8s_aws_id_header: params.pop(k8s_aws_id_header)}
                 ),
             )
             self.sts_client.meta.events.register(
-                'before-sign.sts.GetCallerIdentity',
+                "before-sign.sts.GetCallerIdentity",
                 lambda request, **kwargs: request.headers.add_header(
                     k8s_aws_id_header, request.context[k8s_aws_id_header]
-                )
+                ),
             )
 
             # generate presigned URL
             presigned_url = self.sts_client.generate_presigned_url(
-                'get_caller_identity',
+                "get_caller_identity",
                 Params={k8s_aws_id_header: self.cluster_name},
                 ExpiresIn=url_timeout,
-                HttpMethod='GET',
+                HttpMethod="GET",
             )
             logger.debug(f"Generated signed URL: {presigned_url}")
 
             # encode URL to k8s bearer token
             token = token_prefix + base64.urlsafe_b64encode(
-                presigned_url.encode('utf-8')
-            ).decode('utf-8').rstrip('=')
+                presigned_url.encode("utf-8")
+            ).decode("utf-8").rstrip("=")
 
             logger.debug(f"Generated Bearer token: {token}")
             return token
@@ -603,10 +634,6 @@ class Eks(object):
         except Exception as e:
             logger.error(f"Failed to generate Bearer token: {e}")
             raise
-
-
-
-    
 
     def update_control_plane_sg(self, vpc):
         """
@@ -747,7 +774,7 @@ class IAM(object):
         Init the object.
         """
         self.repo = repo
-        self.iam = boto3.client('iam')
+        self.iam = boto3.client("iam")
 
     def create_cluster_service_role(self):
         try:
@@ -756,35 +783,31 @@ class IAM(object):
                 "Statement": [
                     {
                         "Effect": "Allow",
-                        "Principal": {
-                            "Service": "eks.amazonaws.com"
-                        },
-                        "Action": "sts:AssumeRole"
+                        "Principal": {"Service": "eks.amazonaws.com"},
+                        "Action": "sts:AssumeRole",
                     }
-                ]
+                ],
             }
             role_name = f"{self.repo.cluster_name}-cluster-service-role"
             managed_policies = [
                 "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
-                "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
+                "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController",
             ]
             response = self.iam.create_role(
                 RoleName=role_name,
                 AssumeRolePolicyDocument=json.dumps(eks_trust_policy),
-                Description="EKS Cluster Service Role"
+                Description="EKS Cluster Service Role",
             )
             for policy_arn in managed_policies:
-                self.iam.attach_role_policy(
-                    RoleName=role_name,
-                    PolicyArn=policy_arn
-                )
-            
-            return response['Role']['Arn']
+                self.iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+
+            return response["Role"]["Arn"]
         except self.iam.exceptions.EntityAlreadyExistsException:
             print(f"Role '{role_name}' already exists.")
+            existing_role = self.iam.get_role(RoleName=role_name)
+            return existing_role["Role"]["Arn"]
         except Exception as e:
             print(f"Error creating role: {e}")
-
 
 
 class k8s(object):
@@ -802,8 +825,8 @@ class k8s(object):
         token = eks.get_bearer_token()
 
         kclient_config = k8sclient.Configuration()
-        kclient_config.api_key_prefix['authorization'] = 'Bearer'
-        kclient_config.api_key['authorization'] = token
+        kclient_config.api_key_prefix["authorization"] = "Bearer"
+        kclient_config.api_key["authorization"] = token
         logger.debug(f"bearer token: {kclient_config.api_key}")
         kclient_config.host = api_endpoint
         logger.debug(f"api endpoint: {kclient_config.host}")
@@ -817,73 +840,28 @@ class k8s(object):
         logger.debug(f"client config: {client_config}")
 
         self.kclient = k8sclient.CoreV1Api()
-        pods = self.kclient.list_namespaced_pod(namespace='default')
 
-        namespaces = self.kclient.list_namespace()
-        for ns in namespaces.items:
-            print(f"Namespace: {ns.metadata.name}")
+        # List all ConfigMaps in kube-system
+        configmaps = self.kclient.list_namespaced_config_map(namespace="kube-system")
 
-        pods = self.kclient.list_namespaced_pod(namespace='kube-system')
-        for pod in pods.items:
-            print(f"Pod Name: {pod.metadata.name}")
-        # with k8sclient.ApiClient(client_config) as api_client:
-        #     # Create an instance of the API class
-        #     self.kclient = kubernetes.client.WellKnownApi(api_client)
-            
-        #     try:
-        #         api_response = self.kclient.get_service_account_issuer_open_id_configuration()
-        #         logger.info(api_response)
-        #     except ApiException as e:
-        #         logger.info("Exception when calling WellKnownApi->get_service_account_issuer_open_id_configuration: %s\n" % e)
-            
+        for cm in configmaps.items:
+            print(f"ConfigMap: {cm.metadata.name}")
+            if "user" in cm.metadata.name.lower() or "map" in cm.metadata.name.lower():
+                print(f"Data: {cm.data}")
 
-        pods = self.kclient.list_namespaced_pod(namespace="default")
+        aws_auth_cm = self.kclient.read_namespaced_config_map(
+            name="aws-auth", namespace="kube-system"
+        )
+        logger.info(f"aws-auth ConfigMap Data: {aws_auth_cm.data}")
 
-        # Print the names of the pods
-        for pod in pods.items:
-            print(f"Pod name: {pod.metadata.name}")
-    
-    
-    def create_kube_config_from_eks(self, cluster_info):
-        # Extract necessary fields
-        api_server = cluster_info["endpoint"]
-        cluster_name = cluster_info["name"]
-        ca_data = cluster_info["certificateAuthority"]["data"]
+        # namespaces = self.kclient.list_namespace()
+        # for ns in namespaces.items:
+        #     print(f"Namespace: {ns.metadata.name}")
 
-        # Decode base64 encoded certificate authority data
-        ca_cert = base64.b64decode(ca_data).decode("utf-8")
+        # pods = self.kclient.list_namespaced_pod(namespace='kube-system')
+        # for pod in pods.items:
+        #     print(f"Pod Name: {pod.metadata.name}")
 
-        # Manually create a Kubernetes configuration
-        kube_config = {
-            "apiVersion": "v1",
-            "kind": "Config",
-            "clusters": [
-                {
-                    "cluster": {
-                        "server": api_server,
-                        "certificate-authority-data": ca_data,
-                    },
-                    "name": cluster_name,
-                }
-            ],
-            "contexts": [
-                {
-                    "context": {"cluster": cluster_name, "user": "eks-user"},
-                    "name": "eks-context",
-                }
-            ],
-            "current-context": "eks-context",
-            "users": [
-                {
-                    "name": "eks-user",
-                    "user": {
-                        "token": "your-bearer-token"  # You'll need to authenticate the user
-                    },
-                }
-            ],
-        }
-
-        return kube_config
 
 
 class Vpc(object):

@@ -167,9 +167,15 @@ def common_vpc_option(func):
     type=click.Choice(["yaml", "json"], case_sensitive=False),
     help="Output format: yaml or json",
 )
+@click.option("--state",
+              "-s",
+              default = "local",
+              type=click.Choice(["local", "mongo", "s3"], case_sensitive=False),
+              help="State location, can be local, mongo, or s3"
+              )
 # fmt: on
 @click.pass_context
-def cli(ctx, dry_run, debug, format, org):
+def cli(ctx, dry_run, debug, format, state, org):
     """CLI main group for managing EKS clusters."""
     if debug:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -177,7 +183,7 @@ def cli(ctx, dry_run, debug, format, org):
         logging.getLogger("boto3").setLevel(logging.INFO)
         logger.debug("Debug mode is enabled")
     # Initialize the Repo object and pass it into the context
-    ctx.obj = Repo(dry_run, debug, format)
+    ctx.obj = Repo(dry_run, debug)
     args = locals()
     for key, value in args.items():
         if key != "ctx":
@@ -192,6 +198,9 @@ def cli(ctx, dry_run, debug, format, org):
 def cluster(repo, cluster_name, environment, region):
     """Manage cluster actions like create, delete, or upgrade."""
     set_args_in_repo(repo, locals())
+    repo.state_path = (
+        f"{repo.org}/{repo.environment}/{repo.region}/{repo.cluster_name}"
+    )
 
 
 @cluster.command()
@@ -320,9 +329,17 @@ def create(
     repo.version = version
     repo.private_subnets = deepcopy(vpc.private_subnet_ids)
     repo.public_subnets = deepcopy(vpc.public_subnet_ids)
+    config = ConfigProcessor(repo)
     if not role_arn:
-            iam = IAM(repo)
-            repo.role_arn = iam.create_cluster_service_role()
+        iam = IAM(repo)
+        repo.role_arn = iam.create_cluster_service_role()
+        # if repo.dry_run:
+        #     config.write_state(repo, config)
+        # else:
+        #     config.write_state(repo, eks.cluster_info)
+        ## TODO: figure out how to make a state object for this role
+
+
     if kms_encryption_key:
         repo.encrypted_resources = ["secrets"]
     else:
@@ -341,43 +358,42 @@ def create(
     repo.public_access, repo.private_access = endpoint_access.get(
         public_private_access.lower(), (False, False)
     )
-    config = ConfigProcessor(repo)
-    config.cluster(repo)
+    
+    cluster_config = config.cluster(repo)
     logger.debug(f"config object is a {type(config.cluster_config)}")
     logger.debug(f"{config.cluster_config}")
-    repo.state_path = (
-        f"{repo.org}/{repo.environment}/{repo.region}/{repo.cluster_name}/"
-    )
+
     repo.cluster_filename = (
-        f"cluster-{repo.cluster_name}-{repo.version.replace('.', '-')}.{repo.format}"
+        f"cluster-{repo.cluster_name}.{repo.format}"
     )
     logger.debug(f"state path: {repo.state_path}")
     if repo.dry_run:
-        config.write_state(repo, config)
+        config.write_state(repo, cluster_config)
     else:
         vpc.verify_private_elb_tags()
         vpc.verify_public_elb_tags()
         eks = Eks(repo)
         if eks.check_cluster_exists() is True:
             logger.error("Cluster %s already exists.", config.name)
-            sys.exit(1)
+            sys.exit(0)
         vpc.create_cluster_tags(repo.cluster_name)
-        logger.debug(f"config is:\n{config}")
-        eks.create_cluster(config)
-        logger.debug(f"eks.cluster_info: {eks.cluster_info}")
-        config.write_state(repo, eks.cluster_info)
+        logger.debug(f"config is:\n{cluster_config}")
+        repo.cluster_info = eks.create_cluster(cluster_config)
+        logger.debug(f"eks.cluster_info: {repo.cluster_info}")
+        config.write_state(repo, repo.cluster_info)
 
 
 @cluster.command()
-@common_vpc_option
 @click.pass_obj
 @log_debug_parameters
-def delete(repo, vpc_name):
+def delete(repo):
     """Delete eks cluster"""
-    repo.vpc_name = vpc_name
-    vpc = Vpc(repo)
+    config = ConfigProcessor(repo)
+    cluster_state, state_path = config.fetch_state('cluster', repo.cluster_name)
+    logger.debug(pformat(cluster_state))
     eks_manager = Eks(repo)
-    eks_manager.delete_cluster()
+    eks_manager.delete_cluster(repo)
+    config.delete_state(state_path)
 
 
 @cluster.command()
