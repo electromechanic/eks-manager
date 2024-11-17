@@ -27,6 +27,8 @@ from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.credentials import Credentials
 from botocore.signers import RequestSigner
+from botocore.exceptions import ClientError
+
 
 from .utils import run_command
 
@@ -385,38 +387,6 @@ class Eks(object):
         except self.eks.exceptions.ClientError as err:
             logger.error(f"An error occurred: {err}")
 
-        # schema_path = (
-        #     f"state/{self.environment}/{self.region}/{self.cluster_name}/cluster.yaml"
-        # )
-        # fargate_profiles = self.get_fargate_profiles()
-        # for p in fargate_profiles:
-        #     self.delete_fargateprofile(p)
-        # if self.dry_run:
-        #     command = f"eksctl delete cluster --name {self.cluster_name} --region {self.region}"
-        #     logger.info("Dry run enabled, command is %s", command)
-        #     return
-
-        # self.vpc.delete_cluster_tags(self.cluster_name)
-        # exit_code = run_command(
-        #     [
-        #         "/usr/local/bin/eksctl",
-        #         "delete",
-        #         "cluster",
-        #         "--name",
-        #         self.cluster_name,
-        #         "--region",
-        #         self.region,
-        #     ]
-        # )
-        # if exit_code == 0:
-        #     try:
-        #         shutil.rmtree("/".join(schema_path.split("/")[:-1]))
-        #     except FileNotFoundError:
-        #         logger.error(
-        #             "Directory in config not found for the cluster %s",
-        #             self.cluster_name,
-        #         )
-
     def delete_cluster_public_endpoint(self):
         """
         Remove the cluster controlplane public endpoint.
@@ -700,41 +670,66 @@ class Eks(object):
             self.upgrade_nodegroup_ami(name, current_version, new_version)
             self.upgrade_nodegroup(name, current_version, new_version, drain)
 
-    def upgrade_cluster(self, current_version, new_version):
-        if self.check_cluster_exists() is False:
-            logger.error("Cluster %s does not exist. Exiting.", self.cluster_name)
-            sys.exit(1)
 
-        schema_directory = f"state/{self.environment}/{self.region}/{self.cluster_name}"
-        schema_path = f"{schema_directory}/cluster-{self.cluster}-{current_version.replace('.', '-')}.yaml"
-        schema_path_new = f"{schema_directory}/cluster-{self.cluster}-{new_version.replace('.', '-')}.yaml"
+    def upgrade_cluster(self, new_version):
 
-        if not os.path.isdir(schema_directory):
-            logger.error("Schema directory does not exist: %s", schema_directory)
-            sys.exit(1)
-
-        with open(schema_path_new, "w") as f:
-            yaml.dump(self.create_cluster_schema(new_version), f)
-            logger.info("Saved cluster schema file to %s", schema_path_new)
-
-        if self.dry_run:
-            run_command(
-                ["/usr/local/bin/eksctl", "upgrade", "cluster", "-f", schema_path_new]
+        try:
+            response = self.eks.update_cluster_version(
+                name=self.cluster_name, version=new_version
             )
-            logger.info("Dry run enabled, exiting now")
-            return
-        exit_code = run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "upgrade",
-                "cluster",
-                "-f",
-                schema_path_new,
-                "--approve",
-            ]
-        )
-        if exit_code == 0:
-            os.unlink(schema_path)
+            logger.info(f"Cluster version update initiated: {new_version}")
+
+            start_time = time.time()
+            waiter_delay = 30  # seconds
+            max_attempts = 40  # 20 minutes max wait time
+            ## When this is first initiated the cluster status shows ACTIVE for the first ~60 seconds
+            ## causing the loop to exit before the operation is complete or before the status shows
+            ## UPDATING. Waiting 90 seconds as a safety
+            time.sleep(90)
+            for attempt in range(max_attempts):
+                try:
+                    response = self.eks.describe_cluster(name=self.cluster_name)
+                    cluster_status = response["cluster"]["status"]
+                    logger.debug(pformat(response["cluster"]))
+
+                    if cluster_status == "ACTIVE":
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Cluster {self.cluster_name} successfully updated to version {new_version}. "
+                            f"Total time: {elapsed_seconds} seconds."
+                        )
+                        return response
+                    else:
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Waiting for cluster {self.cluster_name} update to complete... "
+                            f"Elapsed time: {elapsed_seconds} seconds. Status: {cluster_status}"
+                        )
+                        time.sleep(waiter_delay)
+
+                except self.eks.exceptions.ResourceNotFoundException:
+                    logger.error(f"Cluster {self.cluster_name} not found.")
+                    raise
+                except KeyError:
+                    logger.info(
+                        f"Waiting for update details to propagate... "
+                        f"Elapsed time: {int(time.time() - start_time)} seconds."
+                    )
+                    time.sleep(waiter_delay)
+                except ClientError as err:
+                    logger.error(f"An error occurred: {err}")
+                    raise
+
+            logger.error(
+                f"Cluster {self.cluster_name} update timed out after {max_attempts * waiter_delay} seconds."
+            )
+        except ClientError as err:
+            logger.error(f"Failed to initiate cluster update: {err}")
+            raise
+        except Exception as err:
+            logger.error(f"Unexpected error: {err}")
+            raise
+
 
     def upgrade_nodegroup(self, name, current_version, new_version, drain):
         current_schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{current_version.replace('.', '-')}.yaml"
@@ -861,7 +856,6 @@ class k8s(object):
         # pods = self.kclient.list_namespaced_pod(namespace='kube-system')
         # for pod in pods.items:
         #     print(f"Pod Name: {pod.metadata.name}")
-
 
 
 class Vpc(object):

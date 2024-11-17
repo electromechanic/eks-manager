@@ -140,7 +140,6 @@ class ConfigProcessor(object):
         logger.debug(f"cluster_config_yaml is: {self.cluster_config_yaml}")
         return self.cluster_config
 
-
     def construct_state(self, config, repo):
         """Add state metadata to config"""
         # Replace 'ResponseMetadata' with 'metadata'
@@ -180,7 +179,6 @@ class ConfigProcessor(object):
             logger.info("write to mongo")
             return
 
-
     def fetch_state(self, obj_type, name):
 
         if self.repo.state == "local":
@@ -192,27 +190,27 @@ class ConfigProcessor(object):
         if self.repo.state == "mongo":
             logger.info("read from mongo")
             return
-        
+
     def _read_local_state(self, obj_type, name):
         file_path = f"{self.repo.home}/state/{self.repo.state_path}/{obj_type}-{name}.{self.repo.format}"
         try:
-            with open(file_path, 'r') as state_file:
+            with open(file_path, "r") as state_file:
                 state = yaml.safe_load(state_file)
                 return state, file_path
         except Exception as err:
             logger.error(f"error loading state: {err}")
             return None
 
-    def write_state(self, repo, config):
+    def write_state(self, config):
 
-        if repo.state == "local":
-            config = self.construct_state(config, repo)
-            self._write_local_state(repo, config)
+        if self.repo.state == "local":
+            config = self.construct_state(config, self.repo)
+            self._write_local_state(self.repo, config)
             return
-        if repo.state == "s3":
+        if self.repo.state.state == "s3":
             logger.info("write to s3")
             return
-        if repo.state == "mongo":
+        if self.repo.state.state == "mongo":
             logger.info("write to mongo")
             return
 

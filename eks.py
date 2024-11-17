@@ -107,13 +107,13 @@ def common_nodegroup_options(func):
 
 
 def common_upgrade_options(func):
-    @click.option("--kubernetes-version",
-        "-V",
-        envvar="EKS_KUBERNETES_VERSION",
-        default="1.30",
-        required=True,
-        help="Kubernetes version for the cluster or nodegroup",
-    )
+    # @click.option("--kubernetes-version",
+    #     "-V",
+    #     envvar="EKS_KUBERNETES_VERSION",
+    #     default="1.30",
+    #     required=True,
+    #     help="Kubernetes version for the cluster or nodegroup",
+    # )
     @click.option("--upgrade-version",
         "-u",
         envvar="EKS_KUBERNETES_UPGRADE_VERSION",
@@ -198,9 +198,8 @@ def cli(ctx, dry_run, debug, format, state, org):
 def cluster(repo, cluster_name, environment, region):
     """Manage cluster actions like create, delete, or upgrade."""
     set_args_in_repo(repo, locals())
-    repo.state_path = (
-        f"{repo.org}/{repo.environment}/{repo.region}/{repo.cluster_name}"
-    )
+    repo.state_path = f"{repo.org}/{repo.environment}/{repo.region}/{repo.cluster_name}"
+    repo.cluster_filename = f"cluster-{repo.cluster_name}.{repo.format}"
 
 
 @cluster.command()
@@ -339,7 +338,6 @@ def create(
         #     config.write_state(repo, eks.cluster_info)
         ## TODO: figure out how to make a state object for this role
 
-
     if kms_encryption_key:
         repo.encrypted_resources = ["secrets"]
     else:
@@ -358,14 +356,11 @@ def create(
     repo.public_access, repo.private_access = endpoint_access.get(
         public_private_access.lower(), (False, False)
     )
-    
+
     cluster_config = config.cluster(repo)
     logger.debug(f"config object is a {type(config.cluster_config)}")
     logger.debug(f"{config.cluster_config}")
 
-    repo.cluster_filename = (
-        f"cluster-{repo.cluster_name}.{repo.format}"
-    )
     logger.debug(f"state path: {repo.state_path}")
     if repo.dry_run:
         config.write_state(repo, cluster_config)
@@ -380,7 +375,7 @@ def create(
         logger.debug(f"config is:\n{cluster_config}")
         repo.cluster_info = eks.create_cluster(cluster_config)
         logger.debug(f"eks.cluster_info: {repo.cluster_info}")
-        config.write_state(repo, repo.cluster_info)
+        config.write_state(repo.cluster_info)
 
 
 @cluster.command()
@@ -389,7 +384,7 @@ def create(
 def delete(repo):
     """Delete eks cluster"""
     config = ConfigProcessor(repo)
-    cluster_state, state_path = config.fetch_state('cluster', repo.cluster_name)
+    cluster_state, state_path = config.fetch_state("cluster", repo.cluster_name)
     logger.debug(pformat(cluster_state))
     eks_manager = Eks(repo)
     eks_manager.delete_cluster(repo)
@@ -398,15 +393,14 @@ def delete(repo):
 
 @cluster.command()
 @common_upgrade_options
-@common_vpc_option
 @click.pass_obj
 @log_debug_parameters
-def upgrade(repo, kubernetes_version, upgrade_version, vpc_name):
+def upgrade(repo, upgrade_version):
     """Upgrade eks cluster"""
-    repo.vpc_name = vpc_name
-    vpc = Vpc(repo)
-    eks_manager = Eks(repo, vpc=vpc)
-    eks_manager.upgrade_cluster(kubernetes_version, upgrade_version)
+    eks = Eks(repo)
+    cluster_info = eks.upgrade_cluster(upgrade_version)
+    config = ConfigProcessor(repo)
+    config.write_state(cluster_info)
 
 
 @cli.group()
