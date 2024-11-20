@@ -115,7 +115,7 @@ class ConfigProcessor(object):
         config_type = self._detect_type(config)
         logger.debug(f"config_type is {config_type}")
         if config_type == "repo":
-            self.cluster_config = self._cluster_cli(config)
+            self.cluster_config = self._cluster_cli()
             return self.cluster_config
         if config_type == "json":
             pass
@@ -126,38 +126,38 @@ class ConfigProcessor(object):
             f"Config is a {type(config)} not a Repo object, valid JSON, or valid YAML."
         )
 
-    def _cluster_cli(self, repo):
+    def _cluster_cli(self):
         """Build cluster config from CLI repo values"""
-        repo.all_subnets = repo.private_subnets + repo.public_subnets
-        self.cluster_config = self.template.cluster_eks()
-        logger.debug(f"subnets: \n{pformat(repo.all_subnets)}")
-        logger.debug(f"cluster_config is {type(self.cluster_config)}")
-        self.cluster_config_json = json.dumps(self.cluster_config, indent=4)
-        logger.debug(f"cluster_config_json is: {self.cluster_config_json}")
-        self.cluster_config_yaml = yaml.dump(
-            self.cluster_config, default_flow_style=False
-        )
-        logger.debug(f"cluster_config_yaml is: {self.cluster_config_yaml}")
-        return self.cluster_config
+        cluster_config = self.template.cluster_eks()
+        logger.debug(f"cluster_config is {type(cluster_config)}")
+        return cluster_config
 
-    def construct_state(self, config, repo):
+    def fargateprofile(self):
+        self.fargateprofile_config = self.template.fargateprofile()
+        return self.fargateprofile_config
+
+    def nodegroup(self):
+        nodegroup_config = self.template.nodegroup()
+        return nodegroup_config
+
+    def construct_state(self, config):
         """Add state metadata to config"""
-        # Replace 'ResponseMetadata' with 'metadata'
         logger.debug(f"construct state input: {config}")
         if "ResponseMetadata" in config:
             response_metadata = config.pop("ResponseMetadata")
-            # Prepare metadata
-            metadata = {
-                "timestamp": datetime.now(
-                    timezone.utc
-                ).isoformat(),  # Current GMT time as ISO string
-                "organization": repo.org,  # Take organization from the repo object
-                "version": 1,  # Initial version value
-            }
+        metadata = {
+            "timestamp": datetime.now(
+                timezone.utc
+            ).isoformat(),  # Current GMT time as ISO string
+            "organization": self.repo.org,
+            "environment": self.repo.environment,
+            "region": self.repo.region,
+            "cloud_provider": "AWS",
+            "version": 1,
+        }
 
-            # Add the new metadata to the config
-            config["metadata"] = metadata
-            logger.debug(f"construct state metadata+config: {pformat(config)}")
+        config["metadata"] = metadata
+        logger.debug(f"construct state metadata+config: {pformat(config)}")
 
         return config
 
@@ -204,7 +204,7 @@ class ConfigProcessor(object):
     def write_state(self, config):
 
         if self.repo.state == "local":
-            config = self.construct_state(config, self.repo)
+            config = self.construct_state(config)
             self._write_local_state(self.repo, config)
             return
         if self.repo.state.state == "s3":
@@ -226,14 +226,12 @@ class ConfigProcessor(object):
         if not os.path.isdir(path):
             os.makedirs(path)
         # if not os.path.exists(f"{path}/"):
-        with open(f"{path}/{repo.cluster_filename}", "w") as f:
+        with open(f"{path}/{repo.filename}", "w") as f:
             if repo.format == "json":
                 f.write(self.cluster_state_json)
             elif repo.format == "yaml":
                 f.write(self.cluster_state_yaml)
-            logger.info(
-                f"Saved cluster sate file to { f'{path}/{repo.cluster_filename}'}"
-            )
+            logger.info(f"Saved cluster sate file to { f'{path}/{repo.filename}'}")
 
 
 class KeyValueType(click.ParamType):

@@ -40,6 +40,7 @@ class Eks(object):
         """
         Init the object.
         """
+        self.repo = repo
         self.environment = repo.environment
         self.cluster_name = repo.cluster_name
         self.region = repo.region
@@ -138,75 +139,128 @@ class Eks(object):
 
     def create_cluster(self, config):
         """
-        Validate all cluster prereqs and create cluster.
+        Validate all cluster prerequisites, create the cluster, and wait for it to become active.
         """
-        urllib3_logger = logging.getLogger("urllib3")
-        previous_level = urllib3_logger.level
-        urllib3_logger.setLevel(logging.DEBUG)
-        self.cluster_info = self.eks.create_cluster(**config)
-        waiter = self.eks.get_waiter("cluster_active")
-        logger.info("Waiting for EKS cluster to become active...")
         try:
-            waiter.wait(
-                name=self.cluster_name,
-                WaiterConfig={
-                    "Delay": 30,  # seconds between each pole
-                    "MaxAttempts": 40,  # max attempts (20 mins)
-                },
-            )
-            logger.info("Cluster is now active!")
-            logger.debug(f"cluster create return {pformat(self.cluster_info)}")
-            urllib3_logger.setLevel(previous_level)
-        except Exception as e:
-            logger.error(f"Error waiting for the cluster to become active: {e}")
-            urllib3_logger.setLevel(previous_level)
+            logger.info("Creating EKS cluster...")
+            self.cluster_info = self.eks.create_cluster(**config)
+            cluster_name = config["name"]
+
+            logger.info(f"Waiting for EKS cluster '{cluster_name}' to become active...")
+
+            # Custom waiter logic
+            waiter_delay = 30  # seconds
+            max_attempts = 40  # 20 minutes total wait time
+            start_time = time.time()  # Track start time
+
+            for _ in range(max_attempts):
+                try:
+                    response = self.eks.describe_cluster(name=cluster_name)
+                    status = response["cluster"]["status"]
+
+                    if status == "ACTIVE":
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Cluster '{cluster_name}' is now active! Total time: {elapsed_seconds} seconds."
+                        )
+                        break
+                    else:
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Cluster '{cluster_name}' is in status '{status}'... Elapsed time: {elapsed_seconds} seconds."
+                        )
+                        time.sleep(waiter_delay)
+                except ClientError as err:
+                    logger.error(
+                        f"Unexpected error while waiting for cluster to become active: {err}"
+                    )
+                    raise
+
+            else:
+                elapsed_seconds = int(time.time() - start_time)
+                logger.error(
+                    f"Timed out waiting for cluster '{cluster_name}' to become active after {elapsed_seconds} seconds."
+                )
+                raise TimeoutError(f"Cluster '{cluster_name}' activation timed out.")
+
+            logger.debug(f"Cluster create return: {pformat(self.cluster_info)}")
+
+        except Exception as err:
+            logger.error(f"Error during cluster creation or activation: {err}")
             raise
-        finally:
-            urllib3_logger.setLevel(previous_level)
-            return self.cluster_info
+
+        return self.cluster_info
 
         # self.create_admin_users(config.cluster_admins)
         # self.update_control_plane_sg(vpc)
         # self.delete_cluster_public_endpoint()
 
-    def create_fargate_profile(self, name, namespace, labels=None):
-        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
+    def create_fargate_profile(self, config):
+        """
+        Create a Fargate profile for the EKS cluster and wait for it to become active.
+        """
+        logger.info("Creating Fargate profile...")
         try:
-            profile = self.create_fargate_profile_schema(namespace, labels)
-        except BaseException as err:
-            logger.error(err)
-        logger.info(profile)
-        with open(schema_path, "w") as f:
-            yaml.dump(profile, f)
-        if self.dry_run:
-            logger.info("Dry run enabled, schema written here: %s", schema_path)
-            return
-        run_command(
-            ["/usr/local/bin/eksctl", "create", "fargateprofile", "-f", schema_path]
-        )
+            # Initiate Fargate profile creation
+            self.fargate_profile_info = self.eks.create_fargate_profile(**config)
+            fargate_profile_name = config["fargateProfileName"]
+            cluster_name = config["clusterName"]
 
-    def create_fargate_profile_schema(self, name, namespace, labels=None):
-        """
-        Create the fargate profile schema file. Labels are optional and to be placed in fargate, all
-        specified labels must be matched.
-        """
-        schema = {
-            "apiVersion": "eksctl.io/v1alpha5",
-            "kind": "ClusterConfig",
-            "metadata": {"name": self.cluster_name, "region": self.region},
-            "fargateProfiles": [
-                {
-                    "name": f"fp-{name}",
-                    "selectors": [{"namespace": namespace}],
-                    "subnets": deepcopy(self.vpc.private_subnet_ids),
-                }
-            ],
-        }
-        if labels:
-            for label in labels:
-                k, v = label.split("=")
-                schema["fargateProfiles"][0]["selectors"].append({k: v})
-        return schema
+            logger.info(
+                f"Waiting for Fargate profile '{fargate_profile_name}' to become active..."
+            )
+
+            # Custom waiter logic
+            waiter_delay = 30  # seconds
+            max_attempts = 40  # 20 minutes total wait time
+            start_time = time.time()  # Track start time
+
+            for attempts in range(max_attempts):
+                try:
+                    response = self.eks.describe_fargate_profile(
+                        clusterName=cluster_name,
+                        fargateProfileName=fargate_profile_name,
+                    )
+                    status = response["fargateProfile"]["status"]
+
+                    if status == "ACTIVE":
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Fargate profile '{fargate_profile_name}' is now active! Total time: {elapsed_seconds} seconds."
+                        )
+                        break
+                    else:
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Fargate profile '{fargate_profile_name}' is in status '{status}'... Elapsed time: {elapsed_seconds} seconds."
+                        )
+                        time.sleep(waiter_delay)
+                except self.eks.exceptions.ResourceNotFoundException:
+                    logger.error(f"Fargate profile '{fargate_profile_name}' not found.")
+                    raise
+                except ClientError as err:
+                    logger.error(f"Unexpected error during wait: {err}")
+                    raise
+            else:
+                elapsed_seconds = int(time.time() - start_time)
+                logger.error(
+                    f"Timed out waiting for Fargate profile '{fargate_profile_name}' to become active after {elapsed_seconds} seconds."
+                )
+                raise TimeoutError(
+                    f"Fargate profile '{fargate_profile_name}' activation timed out."
+                )
+
+            logger.debug(
+                f"Fargate profile create return: {pformat(self.fargate_profile_info)}"
+            )
+
+        except Exception as err:
+            logger.error(
+                f"Error waiting for the Fargate profile to become active: {err}"
+            )
+            raise
+
+        return self.fargate_profile_info
 
     def create_iam_service_account(
         self, service_account, namespace, iam_policy_arn=None
@@ -253,84 +307,67 @@ class Eks(object):
             )
             return response["Policy"]["Arn"]
 
-    def create_nodegroup(
-        self, name, instance_type, version, desired_capacity=0, min_size=0, max_size=3
-    ):
+    def create_nodegroup(self, config):
         """
-        Create the specified nodegroup.
-        """
-        nodegroup = {
-            "name": name,
-            "desiredCapacity": desired_capacity,
-            "instanceType": instance_type,
-            "maxSize": max_size,
-            "minSize": min_size,
-            "version": version,
-        }
-        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
-        if not os.path.exists(schema_path):
-            with open(schema_path, "w") as f:
-                yaml.dump(self.create_nodegroup_schema(nodegroup, instance_type), f)
-                logger.info("Saved nodegroup schema to %s", schema_path)
-        if self.dry_run:
-            logger.info("Dry run enabled, shema output here: %s", schema_path)
-            return
-        run_command(["/usr/local/bin/eksctl", "create", "nodegroup", "-f", schema_path])
+        Create a Nodegroup for the EKS cluster and wait for it to become active.
 
-    def create_nodegroup_schema(self, nodegroup, instance_type, labels=None):
+        :param config: Dictionary containing nodegroup configuration.
         """
-        Create nodegroup schema document.
-        nodegroup = {
-            'name': str,
-            'instanceType': str,
-            'desiredCapacity': int,
-            'maxSize': int,
-            'minSize': int
-        }
-        returns schema
-        """
-        schema = {
-            "apiVersion": "eksctl.io/v1alpha5",
-            "kind": "ClusterConfig",
-            "metadata": {
-                "name": self.cluster_name,
-                "region": self.region,
-                "version": nodegroup["version"],
-            },
-            "managedNodeGroups": [
-                {
-                    "name": f'{nodegroup["name"]}-{nodegroup["version"].replace(".", "-")}',
-                    "instanceType": instance_type,
-                    "desiredCapacity": nodegroup["desiredCapacity"],
-                    "disablePodIMDS": True,
-                    "ebsOptimized": True,
-                    "labels": {
-                        "nodegroup": nodegroup["name"],
-                        "compute-type": "ec2",
-                        "k8s-version": nodegroup["version"],
-                    },
-                    "maxSize": nodegroup["maxSize"],
-                    "minSize": nodegroup["minSize"],
-                    "privateNetworking": True,
-                    "ssh": {"allow": False},
-                    "volumeEncrypted": True,
-                    "volumeSize": 128,
-                    "volumeType": "gp3",
-                }
-            ],
-        }
-        # if self.config.nodegroups.vanta.enabled is True:
-        #     schema["tags"] = self.config.nodegroups.vanta.tags
-        #     schema["tags"]["VantaDescription"] = self.cluster
-        #     schema["preBootstrapCommands"] = self.config.nodegroups.vanta.preBootstrapCommands
-        if labels:
-            labels = labels.split(",")
-            parsed = {}
-            for label in labels:
-                k, v = label.split("=")
-                parsed[k] = v
-            schema["managedNodeGroups"][0]["labels"].update(parsed)
-        return schema
+        logger.info("Creating Nodegroup...")
+        try:
+            # Initiate Nodegroup creation
+            self.nodegroup_info = self.eks.create_nodegroup(**config)
+            nodegroup_name = config["nodegroupName"]
+            cluster_name = config["clusterName"]
+
+            logger.info(f"Waiting for Nodegroup '{nodegroup_name}' to become active...")
+
+            # Custom waiter logic
+            waiter_delay = 30  # seconds
+            max_attempts = 40  # 20 minutes total wait time
+            start_time = time.time()  # Track start time
+
+            for attempt in range(max_attempts):
+                try:
+                    response = self.eks.describe_nodegroup(
+                        clusterName=cluster_name, nodegroupName=nodegroup_name
+                    )
+                    status = response["nodegroup"]["status"]
+
+                    if status == "ACTIVE":
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Nodegroup '{nodegroup_name}' is now active! Total time: {elapsed_seconds} seconds."
+                        )
+                        break
+                    else:
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Nodegroup '{nodegroup_name}' is in status '{status}'... Elapsed time: {elapsed_seconds} seconds."
+                        )
+                        time.sleep(waiter_delay)
+                except self.eks.exceptions.ResourceNotFoundException:
+                    logger.error(f"Nodegroup '{nodegroup_name}' not found.")
+                    raise
+                except ClientError as err:
+                    logger.error(f"Unexpected error during wait: {err}")
+                    raise
+            else:
+                elapsed_seconds = int(time.time() - start_time)
+                logger.error(
+                    f"Timed out waiting for Nodegroup '{nodegroup_name}' to become active after {elapsed_seconds} seconds."
+                )
+                raise TimeoutError(
+                    f"Nodegroup '{nodegroup_name}' activation timed out."
+                )
+
+            logger.debug(f"Nodegroup create return: {pformat(self.nodegroup_info)}")
+
+        except Exception as err:
+            logger.error(f"Error waiting for the Nodegroup to become active: {err}")
+            raise
+
+        return self.nodegroup_info
 
     def delete_admin_user(self, user):
         if self.dry_run:
@@ -361,7 +398,7 @@ class Eks(object):
         # TODO: include deletion of subnet tags
         try:
             response = self.eks.delete_cluster(name=repo.cluster_name)
-            logger.info(f"Cluster deletion initiated: {response}")
+            logger.info(f"Cluster deletion initiated: {response['cluster']['name']}")
 
             waiter_delay = 20  # seconds
             max_attempts = 30  # maximum attempts to wait
@@ -409,24 +446,48 @@ class Eks(object):
         """
         Delete the specified fargateprofile.
         """
-        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/fargateprofile-{name}.yaml"
-        if self.dry_run:
-            command = f"eksctl delete fargateprofile --name fp-{name} -f {schema_path}"
-            logger.info("Dry run enabled, command is: %s", command)
-            return
-        exit_code = run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "delete",
-                "fargateprofile",
-                "--name",
-                f"fp-{name}",
-                "-f",
-                schema_path,
-            ]
-        )
-        if exit_code == 0:
-            os.unlink(schema_path)
+        try:
+            logger.info(
+                f"Deleting Fargate profile '{name}' from cluster '{self.repo.cluster_name}'..."
+            )
+            response = self.eks.delete_fargate_profile(
+                clusterName=self.repo.cluster_name, fargateProfileName=name
+            )
+            logger.info(f"Delete initiated for Fargate profile '{name}'.")
+            waiter_delay = 10  # seconds
+            max_attempts = 30  # 5 minutes total wait time
+            start_time = time.time()  # Track start time
+            for attempt in range(max_attempts):
+                try:
+                    self.eks.describe_fargate_profile(
+                        clusterName=self.repo.cluster_name, fargateProfileName=name
+                    )
+                    elapsed_seconds = int(time.time() - start_time)
+                    logger.info(
+                        f"Waiting for Fargate profile '{name}' to be deleted... Elapsed time: {elapsed_seconds} seconds."
+                    )
+                    time.sleep(waiter_delay)
+                except self.eks.exceptions.ResourceNotFoundException:
+                    elapsed_seconds = int(time.time() - start_time)
+                    logger.info(
+                        f"Fargate profile '{name}' successfully deleted. Total time: {elapsed_seconds} seconds."
+                    )
+                    return
+                except ClientError as err:
+                    logger.error(f"Unexpected error during deletion wait: {err}")
+                    raise
+
+            elapsed_seconds = int(time.time() - start_time)
+            logger.error(
+                f"Timed out waiting for Fargate profile '{name}' to be deleted after {elapsed_seconds} seconds."
+            )
+            raise TimeoutError(
+                f"Fargate profile '{name}' deletion timed out after {elapsed_seconds} seconds."
+            )
+
+        except ClientError as err:
+            logger.error(f"Failed to delete Fargate profile '{name}': {err}")
+            raise
 
     def delete_iam_policy(self, name):
         """
@@ -670,7 +731,6 @@ class Eks(object):
             self.upgrade_nodegroup_ami(name, current_version, new_version)
             self.upgrade_nodegroup(name, current_version, new_version, drain)
 
-
     def upgrade_cluster(self, new_version):
 
         try:
@@ -729,7 +789,6 @@ class Eks(object):
         except Exception as err:
             logger.error(f"Unexpected error: {err}")
             raise
-
 
     def upgrade_nodegroup(self, name, current_version, new_version, drain):
         current_schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{current_version.replace('.', '-')}.yaml"
@@ -796,13 +855,95 @@ class IAM(object):
             for policy_arn in managed_policies:
                 self.iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
 
-            return response["Role"]["Arn"]
+            return response["Role"]["Arn"], response["Role"]
         except self.iam.exceptions.EntityAlreadyExistsException:
-            print(f"Role '{role_name}' already exists.")
+            logger.info(f"Role '{role_name}' already exists.")
             existing_role = self.iam.get_role(RoleName=role_name)
             return existing_role["Role"]["Arn"]
-        except Exception as e:
-            print(f"Error creating role: {e}")
+        except Exception as err:
+            logger.error(f"Error creating role: {err}")
+
+    def create_fargate_pod_execution_role(self):
+        try:
+            fargate_trust_policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Service": "eks-fargate-pods.amazonaws.com"},
+                        "Action": "sts:AssumeRole",
+                    }
+                ],
+            }
+
+            role_name = f"{self.repo.cluster_name}-fargate-pod-execution-role"
+            managed_policies = [
+                "arn:aws:iam::aws:policy/AmazonEKSFargatePodExecutionRolePolicy",
+            ]
+
+            response = self.iam.create_role(
+                RoleName=role_name,
+                AssumeRolePolicyDocument=json.dumps(fargate_trust_policy),
+                Description="EKS Fargate Pod Execution Role",
+            )
+
+            for policy_arn in managed_policies:
+                self.iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+
+            logger.info(
+                f"Fargate Pod Execution Role '{role_name}' created successfully."
+            )
+            return response["Role"]["Arn"], response["Role"]
+
+        except self.iam.exceptions.EntityAlreadyExistsException:
+            logger.info(f"Role '{role_name}' already exists.")
+            existing_role = self.iam.get_role(RoleName=role_name)
+            return existing_role["Role"]["Arn"], existing_role["Role"]
+
+        except Exception as err:
+            logger.error(f"Error creating Fargate Pod Execution Role: {err}")
+            raise
+
+    def create_node_role(self):
+        """
+        Create an IAM role for EKS Nodegroup and attach required policies.
+        """
+        try:
+            node_trust_policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Service": "ec2.amazonaws.com"},
+                        "Action": "sts:AssumeRole",
+                    }
+                ],
+            }
+            role_name = f"{self.repo.cluster_name}-node-role"
+            managed_policies = [
+                "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+                "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly",
+                "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+                # TODO: add custom policy for IPV6 deployments
+                # https://docs.aws.amazon.com/eks/latest/userguide/create-node-role.html
+            ]
+            response = self.iam.create_role(
+                RoleName=role_name,
+                AssumeRolePolicyDocument=json.dumps(node_trust_policy),
+                Description="EKS Node Role",
+            )
+            for policy_arn in managed_policies:
+                self.iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+
+            logger.info(f"Node role '{role_name}' created successfully.")
+            return response["Role"]["Arn"], response["Role"]
+        except self.iam.exceptions.EntityAlreadyExistsException:
+            logger.info(f"Role '{role_name}' already exists.")
+            existing_role = self.iam.get_role(RoleName=role_name)
+            return existing_role["Role"]["Arn"]
+        except Exception as err:
+            logger.error(f"Error creating node role: {err}")
+            raise
 
 
 class k8s(object):

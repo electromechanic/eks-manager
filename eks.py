@@ -1,10 +1,12 @@
 #! /usr/bin/env python3
 import click
+import copy
 import functools
 import logging
 from copy import deepcopy
 from pprint import pformat
 import sys
+import time
 
 from manager.aws import Vpc, Eks, k8s, IAM
 from manager.utils import (
@@ -95,6 +97,7 @@ def common_nodegroup_options(func):
     )
     @click.option("--kubernetes-version",
         "-k",
+        "version",
         envvar="EKS_KUBERNETES_VERSION",
         default="1.30",
         help="EKS Version",
@@ -199,7 +202,7 @@ def cluster(repo, cluster_name, environment, region):
     """Manage cluster actions like create, delete, or upgrade."""
     set_args_in_repo(repo, locals())
     repo.state_path = f"{repo.org}/{repo.environment}/{repo.region}/{repo.cluster_name}"
-    repo.cluster_filename = f"cluster-{repo.cluster_name}.{repo.format}"
+    repo.filename = f"cluster-{repo.cluster_name}.{repo.format}"
 
 
 @cluster.command()
@@ -333,10 +336,10 @@ def create(
         iam = IAM(repo)
         repo.role_arn = iam.create_cluster_service_role()
         # if repo.dry_run:
-        #     config.write_state(repo, config)
+        #     config.write_state(repo.role_config)
         # else:
-        #     config.write_state(repo, eks.cluster_info)
-        ## TODO: figure out how to make a state object for this role
+        #     config.write_state(repo.role_config)
+        # # TODO: figure out how to make a state object for this role
 
     if kms_encryption_key:
         repo.encrypted_resources = ["secrets"]
@@ -368,14 +371,20 @@ def create(
         vpc.verify_private_elb_tags()
         vpc.verify_public_elb_tags()
         eks = Eks(repo)
-        if eks.check_cluster_exists() is True:
+        if eks.check_cluster_exists() is True:  # TODO: check if exists and in state
             logger.error("Cluster %s already exists.", config.name)
             sys.exit(0)
         vpc.create_cluster_tags(repo.cluster_name)
         logger.debug(f"config is:\n{cluster_config}")
-        repo.cluster_info = eks.create_cluster(cluster_config)
+        # repo.cluster_info = eks.create_cluster(cluster_config)
+        repo.cluster_info = eks.get_cluster_info()
+        repo.cluster_state = copy.deepcopy(repo.cluster_info)
+        repo.cluster_state["cluster"]["resourcesVpcConfig"]["subnetIds"] = {
+            "private": repo.private_subnets,
+            "public": repo.public_subnets,
+        }
         logger.debug(f"eks.cluster_info: {repo.cluster_info}")
-        config.write_state(repo.cluster_info)
+        config.write_state(repo.cluster_state)
 
 
 @cluster.command()
@@ -399,8 +408,13 @@ def upgrade(repo, upgrade_version):
     """Upgrade eks cluster"""
     eks = Eks(repo)
     cluster_info = eks.upgrade_cluster(upgrade_version)
+    # cluster_info = eks.get_cluster_info()
     config = ConfigProcessor(repo)
-    config.write_state(cluster_info)
+    cluster_state, state_path = config.fetch_state("cluster", repo.cluster_name)
+    subnets = cluster_state["cluster"]["resourcesVpcConfig"]["subnetIds"]
+    new_cluster_state = copy.deepcopy(cluster_info)
+    new_cluster_state["cluster"]["resourcesVpcConfig"]["subnetIds"] = subnets
+    config.write_state(new_cluster_state)
 
 
 @cli.group()
@@ -412,37 +426,55 @@ def fargateprofile(repo, cluster_name, environment, region):
     repo.cluster_name = cluster_name
     repo.environment = environment
     repo.region = region
+    repo.state_path = f"{repo.org}/{repo.environment}/{repo.region}/{repo.cluster_name}"
 
 
 @fargateprofile.command()
 # fmt: off
-@click.option("--labels",
+@click.option("--labels", #TODO: work out out how to do labels
     "-l",
     envvar="EKS_FARGATEPROFILE_LABELS",
-    help="Labels for the fargate profile/nodegroup",
-)
+    type=KEY_VALUE_TYPE,
+    help="""Space separated list of key/value pairs for fargate profile labels.
+            example: key1=value1 key2=value2""",)
 @click.option("--name",
     "-n",
     required=True,
     envvar="EKS_FARGATEPROFILE_NAME",
-    help="Name for the fargate profile/nodegroup",
-)
+    help="Name for the fargate profile/nodegroup",)
 @click.option("--namespace",
     "-N",
     required=True,
     envvar="EKS_FARGATEPROFILE_NAMESPACE",
-    help="Namespace for the fargate profile/nodegroup",
-)
+    help="Namespace for the fargate profile/nodegroup",)
+@click.option("--tags",
+    "-t",
+    envvar="EKS_FARGATEPROFILE_TAGS",
+    type=KEY_VALUE_TYPE,
+    default={},
+    help="""Space separated list of key/value pairs for fargate profile tags.
+            example: key1=value1 key2=value2""",)
 # fmt: on
-@common_vpc_option
 @click.pass_obj
 @log_debug_parameters
-def create(repo, name, namespace, labels, vpc_name):
+def create(repo, name, namespace, labels, tags):
     """Create Fargate Profile/Nodegroup"""
-    repo.vpc_name = vpc_name
-    vpc = Vpc(repo)
-    eks_manager = Eks(repo, vpc=vpc)
-    eks_manager.create_fargate_profile(name, namespace, labels=labels)
+    set_args_in_repo(repo, locals())
+    repo.filename = f"fargateprofile-{repo.name}.{repo.format}"
+    config = ConfigProcessor(repo)
+    cluster_state, state_path = config.fetch_state("cluster", repo.cluster_name)
+    repo.subnets = cluster_state["cluster"]["resourcesVpcConfig"]["subnetIds"][
+        "private"
+    ]
+    repo.eks_arn = cluster_state["cluster"]["arn"]
+    iam = IAM(repo)
+    repo.role_arn, repo.role_config = iam.create_fargate_pod_execution_role()
+    time.sleep(7)
+    profile_config = config.fargateprofile()
+    logger.debug(f"profle_config: {profile_config}")
+    eks = Eks(repo)
+    eks.create_fargate_profile(profile_config)
+    config.write_state(profile_config)
 
 
 @fargateprofile.command()
@@ -451,15 +483,17 @@ def create(repo, name, namespace, labels, vpc_name):
     "-n",
     required=True,
     envvar="EKS_FARGATEPROFILE_NAME",
-    help="Name for the fargate profile/nodegroup",
-)
+    help="Name for the fargate profile/nodegroup",)
 # fmt: on
 @click.pass_obj
 @log_debug_parameters
 def delete(repo, name):
     """Delete Fargate Profile/Nodegroup"""
-    eks_manager = Eks(repo)
-    eks_manager.delete_fargateprofile(name)
+    eks = Eks(repo)
+    config = ConfigProcessor(repo)
+    eks.delete_fargateprofile(name)
+    fargateprofile_state, state_path = config.fetch_state("fargateprofile", name)
+    config.delete_state(state_path)
 
 
 @cli.group()
@@ -475,53 +509,98 @@ def nodegroup(repo, cluster_name, environment, region):
 
 @nodegroup.command()
 @common_nodegroup_options
-# fmt: off
-@click.option("--desired-capacity",
-    "-d",
-    envvar="EKS_NODEGROUP_DESIRED_CAPACITY",
-    default=0,
-    help="Desired Capacity",
+@click.option("--min-size", default=1, type=int, help="Minimum size of the nodegroup.")
+@click.option("--max-size", default=3, type=int, help="Maximum size of the nodegroup.")
+@click.option(
+    "--desired-size", default=1, type=int, help="Desired size of the nodegroup."
 )
-@click.option("--instance-class",
-    "-i",
-    envvar="EKS_NODEGROUP_INSTANCE_CLASS",
+@click.option("--disk-size", default=20, type=int, help="Disk size in GB.")
+@click.option(
+    "--subnets",
+    "-s",
+    required=True,
+    type=click.Choice(["public", "private"], case_sensitive=False),
+    default="private",
+    help="deploy to public or private subnets",
+)
+@click.option(
+    "--instance-types",
+    type=SPACE_SEPARATED_LIST,
     default="t4g.medium",
-    help="Instance class",
+    help="Instance types for the nodegroup.",
 )
-@click.option("--max-nodes",
-    "-M",
-    envvar="EKS_NODEGROUP_MAXIMUM_NODES",
-    default=0,
-    help="Maximum nodes",
+@click.option("--ami-type", default="AL2_x86_64", help="AMI type for the nodegroup.")
+@click.option("--ssh-key", help="EC2 SSH key for remote access.")
+@click.option(
+    "--source-security-groups",
+    type=SPACE_SEPARATED_LIST,
+    help="Source security groups for remote access.",
 )
-@click.option("--min-nodes",
-    "-m",
-    envvar="EKS_NODEGROUP_MINIMUM_NODES",
-    default=0,
-    help="Minimum nodes",
+@click.option("--node-role-arn", help="IAM role for the nodegroup.")
+@click.option("--tags", type=KEY_VALUE_TYPE, default={}, help="Tags for the nodegroup.")
+@click.option("--labels", type=KEY_VALUE_TYPE, help="Labels for the nodegroup.")
+@click.option(
+    "--taints", type=KEY_VALUE_TYPE, help="Taints for the nodegroup (key=value:effect)."
 )
-# fmt: on
+# @click.option("--launch-template-name", help="Launch template name for the nodegroup.")
+# @click.option("--launch-template-version", help="Launch template version for the nodegroup.")
+@click.option(
+    "--capacity-type",
+    default="ON_DEMAND",
+    type=click.Choice(["ON_DEMAND", "SPOT"], case_sensitive=False),
+    help="Capacity type for the nodegroup.",
+)
+@click.option("--release-version", help="AMI release version for the nodegroup.")
 @click.pass_obj
-@log_debug_parameters
 def create(
     repo,
     name,
-    instance_class,
-    desired_capacity,
-    max_nodes,
-    min_nodes,
-    kubernetes_version,
+    min_size,
+    max_size,
+    desired_size,
+    disk_size,
+    subnets,
+    instance_types,
+    ami_type,
+    ssh_key,
+    source_security_groups,
+    node_role_arn,
+    tags,
+    labels,
+    taints,
+    # launch_template_name,
+    # launch_template_version,
+    capacity_type,
+    version,
+    release_version,
 ):
-    """Create Nodegroup"""
-    eks_manager = Eks(repo)
-    eks_manager.create_nodegroup(
-        name,
-        instance_class,
-        kubernetes_version,
-        desired_capacity,
-        min_nodes,
-        max_nodes,
-    )
+    """Create a new EKS nodegroup."""
+    set_args_in_repo(repo, locals())
+    repo.state_path = f"{repo.org}/{repo.environment}/{repo.region}/{repo.cluster_name}"
+    repo.filename = f"nodegroup-{repo.name}.{repo.format}"
+    config = ConfigProcessor(repo)
+    if not repo.node_role_arn:
+        iam = IAM(repo)
+        repo.node_role_arn = iam.create_node_role()
+    cluster_state, state_path = config.fetch_state("cluster", repo.cluster_name)
+    repo.subnets.lower()
+    if subnets == "private":
+        repo.subnets = cluster_state["cluster"]["resourcesVpcConfig"]["subnetIds"][
+            "private"
+        ]
+    if subnets == "public":
+        repo.subnets = cluster_state["cluster"]["resourcesVpcConfig"]["subnetIds"][
+            "public"
+        ]
+
+    nodegroup_config = config.nodegroup()
+
+    # Create the nodegroup
+    eks = Eks(repo)
+    eks.create_nodegroup(nodegroup_config)
+
+    # Save the nodegroup state
+    config.write_state(nodegroup_config)
 
 
 @nodegroup.command()
@@ -529,10 +608,13 @@ def create(
 @common_drain_option
 @click.pass_obj
 @log_debug_parameters
-def delete(repo, name, kubernetes_version, drain):
+def delete(repo, name, version, drain):
     """Delete Nodegroup"""
-    eks_manager = Eks(repo)
-    eks_manager.delete_nodegroup(name, kubernetes_version, drain)
+    eks = Eks(repo)
+    config = ConfigProcessor(repo)
+    eks.delete_nodegroup(name, version, drain)
+    nodegroup_state, state_path = config.fetch_state("nodegroup", name)
+    config.delete_state(state_path)
 
 
 @nodegroup.command()
