@@ -36,36 +36,29 @@ logger = logging.getLogger(__name__)  # TODO: add more logging
 
 
 class Eks(object):
-    def __init__(self, repo, config=None):
+    def __init__(self, repo):
         """
         Init the object.
         """
         self.repo = repo
-        self.environment = repo.environment
-        self.cluster_name = repo.cluster_name
-        self.region = repo.region
         self.dry_run = repo.dry_run
 
-        self.eks = boto3.client("eks", region_name=self.region)
+        self.eks = boto3.client("eks", region_name=self.repo.region)
         _session = boto3.Session()
-        self.eks_client = _session.client("eks", region_name=self.region)
-        self.cfn = boto3.client("cloudformation", region_name=self.region)
+        self.eks_client = _session.client("eks", region_name=self.repo.region)
+        self.cfn = boto3.client("cloudformation", region_name=self.repo.region)
 
         self.sts = boto3.client("sts")
         self.sts_client = _session.client("sts")
         self.iam = boto3.client("iam")
         self.environment_id = self.sts.get_caller_identity().get("Account")
 
-        if config:
-            with open(config, "r") as f:
-                self.config = yaml.safe_load(f)
-
     def check_cluster_exists(self):
         """
         Check is cluster stack already exists.
         """
         stacks_details = self.cfn.list_stacks()["StackSummaries"]
-        stack_name = f"eksctl-{self.cluster_name}-cluster"
+        stack_name = f"eksctl-{self.repo.cluster_name}-cluster"
         stacks = [(s["StackName"], s["StackStatus"]) for s in stacks_details]
         exists = False
         for stack, status in stacks:
@@ -74,68 +67,6 @@ class Eks(object):
                     exists = True
                     break
         return exists
-
-    def create_admin_user(self, user):
-        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
-        if not os.path.exists(schema_path):
-            with open(schema_path, "w") as f:
-                yaml.dump(self.create_admin_user_schema(user), f)
-                logger.info("Saved cluster schema file to %s", schema_path)
-        if self.dry_run:
-            command = f"eksctl create iamidentitymapping -f {schema_path}"
-            logger.info("Dry run enabled, command is: %s", command)
-            return
-        run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "create",
-                "iamidentitymapping",
-                "-f",
-                schema_path,
-            ]
-        )
-
-    def create_admin_user_id_maps(self, config):
-
-        response = self.eks.describe_cluster(self.cluster_name)
-        config.cluster_info = response["cluster"]
-        k8s = k8sclient.CoreV1Api()
-        config_map = k8s.read_namespaced_config_map("aws-auth", "kube-system")
-        aws_auth_data = config_map.data["mapRoles"]
-        new_role_mapping = f"""
-        - userearn: arn:aws:iam::290730444397:user/admin
-          username: admin
-          groups:
-            - system:masters
-        """
-        updated_aws_auth_data = aws_auth_data + new_role_mapping
-        config_map.data["mapRoles"] = updated_aws_auth_data
-        k8s.patch_namespaced_config_map("aws-auth", "kube-system", config_map)
-
-    def create_admin_user_schema(self, user):
-        """"""
-        user_arn = f"arn:aws:iam::{self.environment_id}:user/{user}"
-        schema = {
-            "apiVersion": "eksctl.io/v1alpha5",
-            "kind": "ClusterConfig",
-            "metadata": {"name": self.cluster_name, "region": self.region},
-            "iamIdentityMappings": [
-                {
-                    "arn": user_arn,
-                    "username": user,
-                    "groups": ["system:masters"],
-                    "noDuplicateARNs": True,
-                }
-            ],
-        }
-        return schema
-
-    def create_admin_users(self, admins):
-        """
-        Place set IAM account admin access to the EKS cluster for specified admin team members.
-        """
-        for user in admins:
-            self.create_admin_user(user)
 
     def create_cluster(self, config):
         """
@@ -191,7 +122,6 @@ class Eks(object):
 
         return self.cluster_info
 
-        # self.create_admin_users(config.cluster_admins)
         # self.update_control_plane_sg(vpc)
         # self.delete_cluster_public_endpoint()
 
@@ -262,51 +192,6 @@ class Eks(object):
 
         return self.fargate_profile_info
 
-    def create_iam_service_account(
-        self, service_account, namespace, iam_policy_arn=None
-    ):
-        """
-        Create the iam service account using eksctl.
-        """
-        if self.dry_run:
-            command = f"eksctl create iamserviceaccount --cluster {self.cluster_name} --region {self.region} --namespace {namespace} --name {service_account} --attach-policy-arn {iam_policy_arn} --override-existing-serviceaccounts --approve"
-            logger.info("Dry run enabled, command is: %s", command)
-            return
-
-        if iam_policy_arn is None:
-            iam_policy_arn = self.create_iam_service_account_iam_policy(service_account)
-        run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "create",
-                "iamserviceaccount",
-                "--cluster",
-                self.cluster_name,
-                "--region",
-                self.region,
-                "--namespace",
-                namespace,
-                "--name",
-                service_account,
-                "--attach-policy-arn",
-                iam_policy_arn,
-                "--override-existing-serviceaccounts",
-                "--approve",
-            ]
-        )
-
-    def create_iam_service_account_iam_policy(self, service_account):
-        """
-        Create the IAM policy that will be bound to the eks service account.
-        """
-        with open(f"iam-policies/{service_account}-iam-policy.json") as f:
-            iam_policy = json.loads(f.read())
-            response = self.iam.create_policy(
-                PolicyName=f"{self.cluster}-{self.region}-{service_account}",
-                PolicyDocument=json.dumps(iam_policy),
-            )
-            return response["Policy"]["Arn"]
-
     def create_nodegroup(self, config):
         """
         Create a Nodegroup for the EKS cluster and wait for it to become active.
@@ -315,7 +200,6 @@ class Eks(object):
         """
         logger.info("Creating Nodegroup...")
         try:
-            # Initiate Nodegroup creation
             self.nodegroup_info = self.eks.create_nodegroup(**config)
             nodegroup_name = config["nodegroupName"]
             cluster_name = config["clusterName"]
@@ -369,28 +253,6 @@ class Eks(object):
 
         return self.nodegroup_info
 
-    def delete_admin_user(self, user):
-        if self.dry_run:
-            command = f"eksctl delete iamidentitymapping --cluster {self.cluster_name} --region {self.region} --arn arn:aws:iam::{self.environment_id}:user/{user}"
-            logger.info("Dry run enabled, command is: %s", command)
-            return
-        exit_code = run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "delete",
-                "iamidentitymapping",
-                "--cluster",
-                self.cluster_name,
-                "--region",
-                self.region,
-                "--arn",
-                f"arn:aws:iam::{self.environment_id}:user/{user}",
-            ]
-        )
-        if exit_code == 0:
-            schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/idmap-{user}.yaml"
-            os.unlink(schema_path)
-
     def delete_cluster(self, repo):
         """
         Delete subnet tags and cluster.
@@ -429,13 +291,13 @@ class Eks(object):
         Remove the cluster controlplane public endpoint.
         """
         self.eks_client.update_cluster_config(
-            name=self.cluster_name,
+            name=self.repo.cluster_name,
             resourcesVpcConfig={
                 "endpointPublicAccess": False,
             },
         )
         logger.info("Removed cluster control plane public endpoint.")
-        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/cluster-{self.cluster}.yaml"
+        schema_path = f"state/{self.environment}/{self.repo.region}/{self.repo.cluster_name}/cluster-{self.cluster}.yaml"
         with open(schema_path) as f:
             schema = yaml.safe_load(f)
         schema["vpc"]["clusterEndpoints"]["publicAccess"] = False
@@ -489,97 +351,63 @@ class Eks(object):
             logger.error(f"Failed to delete Fargate profile '{name}': {err}")
             raise
 
-    def delete_iam_policy(self, name):
+    def delete_nodegroup(self, name, drain):
         """
-        Delete the specified policy that was used the service account.
+        Delete the specified Nodegroup and wait until it is fully deleted.
+
+        :param name: Name of the Nodegroup to delete.
         """
-        policy = f"{self.cluster}-{self.region}-{name}"
-        policies = self.iam.list_policies(Scope="Local").get("Policies")
+        cluster_name = self.repo.cluster_name
+
+        logger.info(f"Deleting Nodegroup '{name}' from cluster '{cluster_name}'...")
         try:
-            arn = [p.get("Arn") for p in policies if p["PolicyName"] == policy][0]
-            count = 6
-            wait = 10
-            attached = True
-            while attached is True:
-                status = self.iam.get_policy(PolicyArn=arn)
-                if status["Policy"]["AttachmentCount"] == 0:
-                    wait = 0
-                    attached = False
-                else:
-                    count += 1
-                    time.sleep(wait)
-                    if count <= 6:
-                        logger.error(
-                            "Policy %s is still attached to %s entities.",
-                            arn,
-                            status["Policy"]["AttachmentCount"],
-                        )
-                        sys.exit(1)
-            self.iam.delete_policy(PolicyArn=arn)
-            logger.info("Deleted IAM policy for service account: %s", arn)
-        except IndexError:
-            logger.error("Policy %s does not exist.", policy)
-
-    def delete_iam_service_account(self, service_account, namespace):
-        """
-        Create the iam service account using eksctl.
-        """
-        if self.dry_run:
-            command = f"eksctl delete iamserviceaccount --cluster {self.cluster_name} --region {self.region} --namespace {namespace} --name {service_account}"
-            logger.info("command: %s", command)
-            logger.info("Dry run enabled, exiting now")
-            return
-        run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "delete",
-                "iamserviceaccount",
-                "--cluster",
-                self.cluster_name,
-                "--region",
-                self.region,
-                "--namespace",
-                namespace,
-                "--name",
-                service_account,
-            ]
-        )
-        self.delete_iam_policy(service_account)
-
-    def delete_nodegroup(self, name, version, drain):
-        """
-        Delete the specified nodegorup.
-        """
-        schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{version.replace('.', '-')}.yaml"
-        if drain:
-            drain_flag = f"--drain=true"
-        else:
-            drain_flag = ""
-
-        if self.dry_run:
-            logger.info(
-                "Dry run enabled, command is: eksctl delete nodegroup -f %s --approve %s",
-                schema_path,
-                drain_flag,
+            # Initiate Nodegroup deletion
+            response = self.eks.delete_nodegroup(
+                clusterName=cluster_name, nodegroupName=name
             )
-            return
+            logger.info(f"Delete initiated for Nodegroup '{name}'.")
 
-        exit_code = run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "delete",
-                "nodegroup",
-                "-f",
-                schema_path,
-                "--approve",
-                drain_flag,
-            ]
-        )
-        if exit_code == 0:
-            os.unlink(schema_path)
+            # Custom waiter logic
+            waiter_delay = 30  # seconds
+            max_attempts = 40  # 20 minutes total wait time
+            start_time = time.time()  # Track start time
+
+            for attempt in range(max_attempts):
+                try:
+                    self.eks.describe_nodegroup(
+                        clusterName=cluster_name, nodegroupName=name
+                    )
+                    elapsed_seconds = int(time.time() - start_time)
+                    logger.info(
+                        f"Waiting for Nodegroup '{name}' to be deleted... Elapsed time: {elapsed_seconds} seconds."
+                    )
+                    time.sleep(waiter_delay)
+                except self.eks.exceptions.ResourceNotFoundException:
+                    elapsed_seconds = int(time.time() - start_time)
+                    logger.info(
+                        f"Nodegroup '{name}' successfully deleted. Total time: {elapsed_seconds} seconds."
+                    )
+                    return
+                except ClientError as err:
+                    logger.error(
+                        f"Unexpected error while waiting for Nodegroup deletion: {err}"
+                    )
+                    raise
+
+            elapsed_seconds = int(time.time() - start_time)
+            logger.error(
+                f"Timed out waiting for Nodegroup '{name}' to be deleted after {elapsed_seconds} seconds."
+            )
+            raise TimeoutError(
+                f"Nodegroup '{name}' deletion timed out after {elapsed_seconds} seconds."
+            )
+
+        except ClientError as err:
+            logger.error(f"Failed to delete Nodegroup '{name}': {err}")
+            raise
 
     def get_cluster_info(self):
-        self.cluster_info = self.eks.describe_cluster(name=self.cluster_name)
+        self.cluster_info = self.eks.describe_cluster(name=self.repo.cluster_name)
         logger.debug(f"cluster info:\n{pformat(self.cluster_info)}")
         return self.cluster_info
 
@@ -588,7 +416,9 @@ class Eks(object):
         Creates a dictionary containing cluster/nodegroup names as keys with k8s versions
         as values.
         """
-        schema_dir = f"state/{self.environment}/{self.region}/{self.cluster_name}"
+        schema_dir = (
+            f"state/{self.repo.environment}/{self.repo.region}/{self.repo.cluster_name}"
+        )
         if not os.path.exists(schema_dir):
             logger.info("Path to schemas does not exist, please check your inputs")
             sys.exit(1)
@@ -606,7 +436,9 @@ class Eks(object):
         Creates a dictionary containing cluster/nodegroup names as keys with k8s versions
         as values.
         """
-        schema_dir = f"state/{self.environment}/{self.region}/{self.cluster_name}"
+        schema_dir = (
+            f"state/{self.repo.environment}/{self.repo.region}/{self.repo.cluster_name}"
+        )
         if not os.path.exists(schema_dir):
             logger.info("Path to schemas does not exist, please check your inputs")
             sys.exit(1)
@@ -648,7 +480,7 @@ class Eks(object):
             # generate presigned URL
             presigned_url = self.sts_client.generate_presigned_url(
                 "get_caller_identity",
-                Params={k8s_aws_id_header: self.cluster_name},
+                Params={k8s_aws_id_header: self.repo.cluster_name},
                 ExpiresIn=url_timeout,
                 HttpMethod="GET",
             )
@@ -678,7 +510,7 @@ class Eks(object):
                 {
                     "Name": "tag:Name",
                     "Values": [
-                        f"{self.cluster_name}-cluster/ControlPlaneSecurityGroup"
+                        f"{self.repo.cluster_name}-cluster/ControlPlaneSecurityGroup"
                     ],
                 }
             ],
@@ -735,7 +567,7 @@ class Eks(object):
 
         try:
             response = self.eks.update_cluster_version(
-                name=self.cluster_name, version=new_version
+                name=self.repo.cluster_name, version=new_version
             )
             logger.info(f"Cluster version update initiated: {new_version}")
 
@@ -748,27 +580,27 @@ class Eks(object):
             time.sleep(90)
             for attempt in range(max_attempts):
                 try:
-                    response = self.eks.describe_cluster(name=self.cluster_name)
+                    response = self.eks.describe_cluster(name=self.repo.cluster_name)
                     cluster_status = response["cluster"]["status"]
                     logger.debug(pformat(response["cluster"]))
 
                     if cluster_status == "ACTIVE":
                         elapsed_seconds = int(time.time() - start_time)
                         logger.info(
-                            f"Cluster {self.cluster_name} successfully updated to version {new_version}. "
+                            f"Cluster {self.repo.cluster_name} successfully updated to version {new_version}. "
                             f"Total time: {elapsed_seconds} seconds."
                         )
                         return response
                     else:
                         elapsed_seconds = int(time.time() - start_time)
                         logger.info(
-                            f"Waiting for cluster {self.cluster_name} update to complete... "
+                            f"Waiting for cluster {self.repo.cluster_name} update to complete... "
                             f"Elapsed time: {elapsed_seconds} seconds. Status: {cluster_status}"
                         )
                         time.sleep(waiter_delay)
 
                 except self.eks.exceptions.ResourceNotFoundException:
-                    logger.error(f"Cluster {self.cluster_name} not found.")
+                    logger.error(f"Cluster {self.repo.cluster_name} not found.")
                     raise
                 except KeyError:
                     logger.info(
@@ -781,7 +613,7 @@ class Eks(object):
                     raise
 
             logger.error(
-                f"Cluster {self.cluster_name} update timed out after {max_attempts * waiter_delay} seconds."
+                f"Cluster {self.repo.cluster_name} update timed out after {max_attempts * waiter_delay} seconds."
             )
         except ClientError as err:
             logger.error(f"Failed to initiate cluster update: {err}")
@@ -791,7 +623,6 @@ class Eks(object):
             raise
 
     def upgrade_nodegroup(self, name, current_version, new_version, drain):
-        current_schema_path = f"state/{self.environment}/{self.region}/{self.cluster_name}/nodegroup-{name}-{current_version.replace('.', '-')}.yaml"
         current_schema = yaml.safe_load(open(current_schema_path, "r"))
         instance_type = current_schema["managedNodeGroups"][0]["instanceType"]
         desired = current_schema["managedNodeGroups"][0]["desiredCapacity"]
@@ -800,26 +631,80 @@ class Eks(object):
         self.create_nodegroup(name, instance_type, new_version, desired, min, max)
         self.delete_nodegroup(name, current_version, drain)
 
-    def upgrade_nodegroup_ami(self, name, current_version, new_version):
-        if self.dry_run:
-            command = (
-                f"eksctl upgrade nodegroup --name={name}-{current_version.replace('.', '-')} --cluster={self.cluster_name} --kubernetes-version={new_version} --region={self.region}",
-            )
-            logger.info("Command to be executed:")
-            logger.info(str(command))
-            logger.info("Dry run enabled, exiting now")
-            return
-        run_command(
-            [
-                "eksctl",
-                "upgrade",
-                "nodegroup",
-                f"--name={name}-{current_version.replace('.', '-')}",
-                f"--cluster={self.cluster_name}",
-                f"--kubernetes-version={new_version}",
-                f"--region={self.region}",
-            ]
+    def upgrade_nodegroup_ami(self, name, version, release_version=None):
+        """
+        Upgrade the specified Nodegroup to a new Kubernetes version and wait for the upgrade to complete.
+
+        :param name: Name of the Nodegroup to upgrade.
+        :param version: Kubernetes version to upgrade the Nodegroup to.
+        :param release_version: Optional AMI release version for the upgrade.
+        """
+        cluster_name = self.repo.cluster_name
+
+        logger.info(
+            f"Upgrading Nodegroup '{name}' in cluster '{cluster_name}' to version '{version}'..."
         )
+        try:
+            # Initiate Nodegroup upgrade
+            upgrade_params = {
+                "clusterName": cluster_name,
+                "nodegroupName": name,
+                "version": version,
+            }
+            if release_version:
+                upgrade_params["releaseVersion"] = release_version
+
+            response = self.eks.update_nodegroup_version(**upgrade_params)
+            logger.info(
+                f"Upgrade initiated for Nodegroup '{name}' to version '{version}'."
+            )
+
+            # Custom waiter logic
+            waiter_delay = 30  # seconds
+            max_attempts = 40  # 20 minutes total wait time
+            start_time = time.time()  # Track start time
+
+            for _ in range(max_attempts):
+                try:
+                    response = self.eks.describe_nodegroup(
+                        clusterName=cluster_name, nodegroupName=name
+                    )
+                    status = response["nodegroup"]["status"]
+
+                    if status == "ACTIVE":
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Nodegroup '{name}' successfully upgraded to version '{version}'. Total time: {elapsed_seconds} seconds."
+                        )
+                        return response
+                    elif status == "UPDATING":
+                        elapsed_seconds = int(time.time() - start_time)
+                        logger.info(
+                            f"Nodegroup '{name}' is upgrading... Elapsed time: {elapsed_seconds} seconds."
+                        )
+                        time.sleep(waiter_delay)
+                    else:
+                        logger.warning(
+                            f"Unexpected status '{status}' for Nodegroup '{name}'. Continuing to monitor..."
+                        )
+                        time.sleep(waiter_delay)
+                except ClientError as err:
+                    logger.error(
+                        f"Unexpected error while monitoring Nodegroup upgrade: {err}"
+                    )
+                    raise
+
+            elapsed_seconds = int(time.time() - start_time)
+            logger.error(
+                f"Timed out waiting for Nodegroup '{name}' to complete the upgrade after {elapsed_seconds} seconds."
+            )
+            raise TimeoutError(
+                f"Nodegroup '{name}' upgrade timed out after {elapsed_seconds} seconds."
+            )
+
+        except ClientError as err:
+            logger.error(f"Failed to upgrade Nodegroup '{name}': {err}")
+            raise
 
 
 class IAM(object):
