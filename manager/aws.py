@@ -84,7 +84,7 @@ class Eks(object):
             max_attempts = 40  # 20 minutes total wait time
             start_time = time.time()  # Track start time
 
-            for _ in range(max_attempts):
+            for attempt in range(max_attempts):
                 try:
                     response = self.eks.describe_cluster(name=cluster_name)
                     status = response["cluster"]["status"]
@@ -664,7 +664,7 @@ class Eks(object):
             max_attempts = 40  # 20 minutes total wait time
             start_time = time.time()  # Track start time
 
-            for _ in range(max_attempts):
+            for attempt in range(max_attempts):
                 try:
                     response = self.eks.describe_nodegroup(
                         clusterName=cluster_name, nodegroupName=name

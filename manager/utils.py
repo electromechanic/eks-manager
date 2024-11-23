@@ -29,22 +29,12 @@ class Repo(object):
     ):
         self.dry_run = dry_run
         self.debug = debug
-        self.eks_versions = self._get_eks_versions()
         self.format = format
         self.home = os.path.abspath(".")
 
         logger.debug(f"Repo object created with dry_run={dry_run}, debug={debug}")
 
-    def _get_eks_versions(self):
-        """Get supported versions of eks based on eksctl version."""
-        returncode, stdout, stderr = run_command(
-            [
-                "/usr/local/bin/eksctl",
-                "version",
-                "-o",
-                "json",
-            ]
-        )
+
 
         # Check if the command failed
         if returncode != 0:

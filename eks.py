@@ -34,51 +34,17 @@ def common_options(func):
     @click.option("--cluster-name",
         "-c",
         envvar="EKS_CLUSTER_NAME",
-        help="EKS Cluster name",
-    )
+        help="EKS Cluster name",)
     @click.option("--environment",
         "-e",
         envvar="EKS_ENVIRONMENT",
         default="dev",
-        help="Environment",
-    )
+        help="Environment",)
     @click.option("--region",
         "-r",
         envvar="EKS_REGION",
         default="us-east-1",
-        help="AWS Region",
-    )
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    return wrapper
-
-def common_iamserviceaccount_options(func):
-    @click.option("--name",
-        "-n",
-        envvar="EKS_IAMSERVICEACCOUNT_NAME",
-        help="IAM service account name",
-    )
-    @click.option("--namespace",
-        "-N",
-        required=True,
-        envvar="EKS_IAMSERVICEACCOUNT_NAMESPACE",
-        help="Namespace for the IAM service account",
-    )
-    @functools.wraps(func)  # Keeps the original function signature and docs
-    def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    return wrapper
-
-def common_vpc_option(func):
-    @click.option("--vpc-name",
-        "-v",
-        envvar="EKS_VPC_NAME",
-        required=True,
-        help="VPC name",
-    )
+        help="AWS Region",)
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
@@ -149,12 +115,12 @@ def cluster(repo, cluster_name, environment, region):
     envvar="EKS_CLUSTER_BOOTSTRAP_ADMIN",
     default=True,
     help="Specifies whether or not the cluster creator IAM principal is set as a cluster admin access",)
-@click.option("--cluster-admins",
-    "-C",
-    envvar="EKS_CLUSTER_CLUSTER_ADMINS",
-    type=SPACE_SEPARATED_LIST,
-    default="",
-    help="Space separated list of IAM user names in the target account to give admin access.",)
+# @click.option("--cluster-admins",
+#     "-C",
+#     envvar="EKS_CLUSTER_CLUSTER_ADMINS",
+#     type=SPACE_SEPARATED_LIST,
+#     default="",
+#     help="Space separated list of IAM user names in the target account to give admin access.",)
 @click.option("--ip-family",
     "-i",
     envvar="EKS_CLUSTER_IP_FAMILY",
@@ -212,6 +178,11 @@ def cluster(repo, cluster_name, environment, region):
     type=click.Choice(["EXTENDED", "STANDARD"], case_sensitive=False),
     default="STANDARD",
     help="EKS support type.",)
+@click.option("--vpc-name",
+    "-v",
+    envvar="EKS_VPC_NAME",
+    required=True,
+    help="VPC name",)
 @click.option("--tags",
     "-t",
     envvar="EKS_CLUSTER_TAGS",
@@ -242,10 +213,6 @@ def create(
 ):
     """Create a new cluster"""
     logger.debug(f"starting cluster create command")
-    if version not in repo.eks_versions:
-        logger.info(f"Invalid Kubernetes version: {version}.")
-        logger.info(f"Supported versions: {', '.join(repo.eks_versions)}")
-        return
 
     set_args_in_repo(repo, locals())
 
@@ -446,59 +413,74 @@ def nodegroup(repo, cluster_name, environment, region):
     envvar="EKS_NODEGROUP_NAME",
     default="test",
     help="Nodegroup name",)
-@click.option("--min-size", 
+@click.option("--min-size",
+    envvar="EKS_NODEGROUP_MIN_SIZE",
     default=1, 
     type=int, 
     help="Minimum size of the nodegroup.")
-@click.option("--max-size", 
+@click.option("--max-size",
+    envvar="EKS_NODEGROUP_MAX_SIZE",
     default=3, 
     type=int, 
     help="Maximum size of the nodegroup.")
-@click.option("--desired-size", 
+@click.option("--desired-size",
+    envvar="EKS_NODEGROUP_DESIRED_SIZE",
     default=1, 
     type=int, 
     help="Desired size of the nodegroup.")
-@click.option("--disk-size", 
+@click.option("--disk-size",
+    envvar="EKS_NODEGROUP_DISK_SIZE",
     default=20, 
     type=int, 
     help="Disk size in GB.")
 @click.option("--subnets",
     "-s",
+    envvar="EKS_NODEGROUP_SUBNETS",
     required=True,
     type=click.Choice(["public", "private"], case_sensitive=False),
     default="private",
     help="deploy to public or private subnets",)
 @click.option("--instance-types",
+    envvar="EKS_NODEGROUP_INSTANCE_TYPES",
     type=SPACE_SEPARATED_LIST,
     default="t4g.medium",
     help="Instance types for the nodegroup.",)
-@click.option("--ami-type", 
+@click.option("--ami-type",
+    envvar="EKS_NODEGROUP_AMI_TYPE",
     default="AL2_ARM_64",
     help="AMI type for the nodegroup.")
-@click.option("--ssh-key", 
+@click.option("--ssh-key",
+    envvar="EKS_NODEGROUP_SSH_KEY",
     help="EC2 SSH key for remote access.")
 @click.option("--source-security-groups",
+    envvar="EKS_NODEGROUP_SECURITY_GROUPS",
     type=SPACE_SEPARATED_LIST,
     help="Source security groups for remote access.",)
-@click.option("--node-role-arn", 
+@click.option("--node-role-arn",
+    envvar="EKS_NODEGROUP_NODE_ROLE_ARN",
     help="IAM role for the nodegroup.")
-@click.option("--tags", 
+@click.option("--tags",
+    envvar="EKS_NODEGROUP_TAGS",
     type=KEY_VALUE_TYPE, 
     default={}, 
     help="Tags for the nodegroup.")
-@click.option("--labels", 
+@click.option("--labels",
+    envvar="EKS_NODEGROUP_LABELS",
     type=KEY_VALUE_TYPE, 
     help="Labels for the nodegroup.")
 @click.option("--taints",
+    envvar="EKS_NODEGROUP_TAINTS",
     type=KEY_VALUE_TYPE, 
     help="Taints for the nodegroup (key=value:effect).")
 # @click.option("--launch-template-name", help="Launch template name for the nodegroup.")
 # @click.option("--launch-template-version", help="Launch template version for the nodegroup.")
 @click.option("--capacity-type",
+    envvar="EKS_NODEGROUP_CAPACITY_TYPE",
     default="ON_DEMAND",
     type=click.Choice(["ON_DEMAND", "SPOT"], case_sensitive=False),
     help="Capacity type for the nodegroup.",)
-@click.option("--release-version", 
+@click.option("--release-version",
+    envvar="EKS_NODEGROUP_RELEASE_VERSION",
     help="AMI release version for the nodegroup.")
 @click.option("--kubernetes-version",
     "-k",
