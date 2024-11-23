@@ -9,9 +9,12 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     install_requires=[
-        "click",
         "boto3",
+        "botocore",
+        "click",
+        "kubernetes",
         "PyYAML",
+        "python-dateutil"
     ],
     entry_points={
         "console_scripts": ["eks=eks:cli", "eks-manager=eks:cli"],

@@ -30,8 +30,6 @@ from botocore.signers import RequestSigner
 from botocore.exceptions import ClientError
 
 
-from .utils import run_command
-
 logger = logging.getLogger(__name__)  # TODO: add more logging
 
 

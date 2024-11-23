@@ -191,7 +191,6 @@ def cluster(repo, cluster_name, environment, region):
     help="""Space separated list of key/value pairs for EKS cluster.
             example: key1=value1 key2=value2""",)
 # fmt: on
-@common_vpc_option
 @click.pass_obj
 @log_debug_parameters
 def create(
