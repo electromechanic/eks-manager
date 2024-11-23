@@ -8,8 +8,8 @@ from pprint import pformat
 import sys
 import time
 
-from manager.aws import Vpc, Eks, k8s, IAM
-from manager.utils import (
+from eks.manager.aws import Vpc, Eks, k8s, IAM
+from eks.manager.utils import (
     SpaceSeparatedList,
     KeyValueType,
     Repo,
