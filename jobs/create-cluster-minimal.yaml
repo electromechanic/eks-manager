@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eks-create-cluster-job
+spec:
+  backoffLimit: 10  # Prevent retries if the job fails
+  template:
+    metadata:
+      labels:
+        app: eks-manager
+    spec:
+      restartPolicy: Never  # Ensure no pod restarts
+      containers:
+        - name: eks-manager
+          image: eks-manager:v1   # Your built image
+          command: ["eks", "cluster", "create"]        # Command to run the CLI  # Subcommand to execute
+          env:
+            - name: EKS_CLUSTER_NAME
+              value: "my-cluster"  # Replace with the actual cluster name
+            - name: EKS_VPC_NAME
+              value: "lab-dev-us-east-1-vpc"      # Replace with the actual VPC name
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: aws_access_key_id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: aws_secret_access_key
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"   # Replace with your regio

@@ -35,24 +35,6 @@ class Repo(object):
         logger.debug(f"Repo object created with dry_run={dry_run}, debug={debug}")
 
 
-
-        # Check if the command failed
-        if returncode != 0:
-            logger.error(
-                f"Failed to get EKS versions. Return code: {returncode}, stderr: {stderr}"
-            )
-            return []
-
-        try:
-            stdout_dict = json.loads(stdout)
-            versions = stdout_dict.get("EKSServerSupportedVersions", [])
-            logger.debug(f"Supported EKS versions: {versions}")
-            return versions
-        except json.JSONDecodeError as err:
-            logger.error(f"Failed to parse JSON from eksctl output: {err}")
-            return []
-
-
 class ConfigProcessor(object):
     def __init__(self, repo):
         """
