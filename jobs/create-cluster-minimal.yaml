@@ -3,7 +3,7 @@ kind: Job
 metadata:
   name: eks-create-cluster-job
 spec:
-  backoffLimit: 0  # Prevent retries if the job fails
+  backoffLimit: 10  # Prevent retries if the job fails
   template:
     metadata:
       labels:
@@ -30,13 +30,4 @@ spec:
                   name: aws-credentials
                   key: aws_secret_access_key
             - name: AWS_DEFAULT_REGION
-              value: "us-east-1"   # Replace with your region
-
-          volumeMounts:
-            - name: state-volume
-              mountPath: /app/state   # Mount the `/state` directory for testing
-      volumes:
-        - name: state-volume
-          hostPath:
-            path: /home/ryan/Projects/eks-manager/state   # Path to your state directory
-            type: Directory
+              value: "us-east-1"   # Replace with your regio

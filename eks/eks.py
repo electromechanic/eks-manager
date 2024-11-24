@@ -1,4 +1,5 @@
 #! /usr/bin/env python3
+import atexit
 import click
 import copy
 import functools
@@ -22,13 +23,30 @@ logging.basicConfig(
     level=logging.INFO,
     format=("%(asctime)s [%(name)s] [%(levelname)s] %(message)s"),
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # Send logs to stdout
+    ],
 )
 logger = logging.getLogger(__name__)
+
+# flush logs on exit
+atexit.register(logging.shutdown)
+
+# Log uncaught exceptions
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+
+sys.excepthook = handle_exception
+
 
 SPACE_SEPARATED_LIST = SpaceSeparatedList()
 KEY_VALUE_TYPE = KeyValueType()
 
-# Reusable decorators for shared options
+# Reusable decorator for shared options
 # fmt: off
 def common_options(func):
     @click.option("--cluster-name",
@@ -115,12 +133,6 @@ def cluster(repo, cluster_name, environment, region):
     envvar="EKS_CLUSTER_BOOTSTRAP_ADMIN",
     default=True,
     help="Specifies whether or not the cluster creator IAM principal is set as a cluster admin access",)
-# @click.option("--cluster-admins",
-#     "-C",
-#     envvar="EKS_CLUSTER_CLUSTER_ADMINS",
-#     type=SPACE_SEPARATED_LIST,
-#     default="",
-#     help="Space separated list of IAM user names in the target account to give admin access.",)
 @click.option("--ip-family",
     "-i",
     envvar="EKS_CLUSTER_IP_FAMILY",
@@ -196,7 +208,6 @@ def cluster(repo, cluster_name, environment, region):
 def create(
     repo,
     bootstrap_admin_perms,
-    cluster_admins,
     ip_family,
     kms_encryption_key,
     kubernetes_cidr_block,

@@ -737,7 +737,7 @@ class IAM(object):
             )
             for policy_arn in managed_policies:
                 self.iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
-
+            logger.info(f"created role: {response['Role']['Arn']}")
             return response["Role"]["Arn"], response["Role"]
         except self.iam.exceptions.EntityAlreadyExistsException:
             logger.info(f"Role '{role_name}' already exists.")
