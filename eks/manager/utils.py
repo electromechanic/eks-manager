@@ -1,3 +1,4 @@
+import functools
 import inspect
 import io
 import logging
@@ -6,6 +7,7 @@ import os
 import random
 import string
 import subprocess
+import sys
 import yaml
 
 import click
@@ -330,3 +332,94 @@ def stringify_yaml(yaml_data):
     yaml.dump(yaml_data, f, default_flow_style=False)
     f.seek(0)
     return f.read()
+
+
+def generate_manifest(ctx, repo, image="eks-manager:v1", output_file=None):
+    """
+    Generate a Kubernetes job manifest using options from the current subcommand and its group,
+    mapping to the specified environment variable names.
+    """
+    # Construct the command dynamically by traversing the context
+    command = []
+    current_ctx = ctx
+    while current_ctx:
+        if current_ctx.info_name:
+            command.insert(0, current_ctx.info_name)  # Prepend the command or group
+        current_ctx = current_ctx.parent  # Move up to the parent context
+
+    logger.debug(f"Dynamically constructed command: {' '.join(command)}")
+
+    # Construct the job name
+    job_name = "-".join(command) + "-job"
+    logger.debug(f"Job name: {job_name}")
+
+    # Dynamically set the output file name if not provided
+    if output_file is None:
+        output_file = f"{job_name}.yaml"
+    logger.debug(f"Output file: {output_file}")
+
+    # Traverse the context to gather relevant options
+    relevant_params = {}
+    current_ctx = ctx
+    while current_ctx:
+        # Include only the parameters from the current subcommand or group
+        relevant_params.update(current_ctx.params)
+        if current_ctx.parent and current_ctx.parent.info_name == "eks":
+            break  # Stop at the top-level group
+        current_ctx = current_ctx.parent
+
+    logger.debug(f"Filtered parameters for manifest: {relevant_params}")
+
+    # Map parameter names to their `envvar` values as defined in Click options
+    env_vars = []
+    current_ctx = ctx
+    while current_ctx:
+        for param in current_ctx.command.params:
+            if isinstance(param, click.Option) and param.envvar:
+                value = relevant_params.get(param.name, None)
+                env_vars.append(
+                    {
+                        "name": param.envvar,
+                        "value": str(value) if value is not None else "",
+                    }
+                )
+        if current_ctx.parent and current_ctx.parent.info_name == "eks":
+            break  # Stop at the top-level group
+        current_ctx = current_ctx.parent
+
+    logger.debug(f"Environment variables for the manifest: {env_vars}")
+
+    # Construct the Kubernetes Job manifest
+    manifest = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": job_name,  # Use the command structure for naming
+            "labels": {"app": "eks-job"},
+        },
+        "spec": {
+            "backoffLimit": 0,
+            "template": {
+                "metadata": {"labels": {"app": "eks-job"}},
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "eks-job-container",
+                            "image": image,
+                            "command": command,  # Pass the constructed command
+                            "env": env_vars,  # Pass filtered environment variables
+                        }
+                    ],
+                    "restartPolicy": "Never",
+                },
+            },
+        },
+    }
+
+    # Write the manifest to the dynamically set file name
+    with open(output_file, "w") as f:
+        yaml.dump(manifest, f)
+    logger.info(f"Manifest written to {output_file}. Exiting.")
+
+    # Exit the process successfully
+    sys.exit(0)

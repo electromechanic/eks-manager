@@ -8,6 +8,7 @@ from copy import deepcopy
 from pprint import pformat
 import sys
 import time
+import yaml
 
 from eks.manager.aws import Vpc, Eks, k8s, IAM
 from eks.manager.utils import (
@@ -17,6 +18,7 @@ from eks.manager.utils import (
     ConfigProcessor,
     log_debug_parameters,
     set_args_in_repo,
+    generate_manifest,
 )
 
 logging.basicConfig(
@@ -49,24 +51,12 @@ KEY_VALUE_TYPE = KeyValueType()
 # Reusable decorator for shared options
 # fmt: off
 def common_options(func):
-    @click.option("--cluster-name",
-        "-c",
-        envvar="EKS_CLUSTER_NAME",
-        help="EKS Cluster name",)
-    @click.option("--environment",
-        "-e",
-        envvar="EKS_ENVIRONMENT",
-        default="dev",
-        help="Environment",)
-    @click.option("--region",
-        "-r",
-        envvar="EKS_REGION",
-        default="us-east-1",
-        help="AWS Region",)
+    @click.option("--cluster-name", "-c", envvar="EKS_CLUSTER_NAME", help="EKS Cluster name")
+    @click.option("--environment", "-e", envvar="EKS_ENVIRONMENT", default="dev", help="Environment")
+    @click.option("--region", "-r", envvar="EKS_REGION", default="us-east-1", help="AWS Region")
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
-
     return wrapper
 # fmt: on
 
@@ -186,7 +176,7 @@ def cluster(repo, cluster_name, environment, region):
     help="Space separated list of security group ids for EKS resources.",)
 @click.option("--support-type",
     "-s",
-    envvar="EKS_CLUSTER_SECURITY_GROUPS",
+    envvar="EKS_CLUSTER_SUPPORT_TYPE",
     type=click.Choice(["EXTENDED", "STANDARD"], case_sensitive=False),
     default="STANDARD",
     help="EKS support type.",)
@@ -202,9 +192,16 @@ def cluster(repo, cluster_name, environment, region):
     default={},
     help="""Space separated list of key/value pairs for EKS cluster.
             example: key1=value1 key2=value2""",)
+@click.option("--write-manifest", 
+    is_flag=True, 
+    default=False, 
+    help="Generate a Kubernetes Job manifest and exit")
+
 # fmt: on
 @click.pass_obj
+# @click.pass_context
 @log_debug_parameters
+# @write_manifest(output_file="cluster-job.yaml")
 def create(
     repo,
     bootstrap_admin_perms,
@@ -220,6 +217,7 @@ def create(
     support_type,
     tags,
     vpc_name,
+    write_manifest,
 ):
     """Create a new cluster"""
     logger.debug(f"starting cluster create command")
@@ -260,7 +258,9 @@ def create(
     repo.public_access, repo.private_access = endpoint_access.get(
         public_private_access.lower(), (False, False)
     )
-
+    if write_manifest:
+        ctx = click.get_current_context()
+        generate_manifest(ctx, repo, image="eks-manager:v1")
     cluster_config = config.cluster(repo)
     logger.debug(f"config object is a {type(config.cluster_config)}")
     logger.debug(f"{config.cluster_config}")
