@@ -349,11 +349,9 @@ def generate_manifest(ctx, repo, image="eks-manager:v1", output_file=None):
 
     logger.debug(f"Dynamically constructed command: {' '.join(command)}")
 
-    # Construct the job name
     job_name = "-".join(command) + "-job"
     logger.debug(f"Job name: {job_name}")
 
-    # Dynamically set the output file name if not provided
     if output_file is None:
         output_file = f"{job_name}.yaml"
     logger.debug(f"Output file: {output_file}")
@@ -389,12 +387,11 @@ def generate_manifest(ctx, repo, image="eks-manager:v1", output_file=None):
 
     logger.debug(f"Environment variables for the manifest: {env_vars}")
 
-    # Construct the Kubernetes Job manifest
     manifest = {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "name": job_name,  # Use the command structure for naming
+            "name": job_name, 
             "labels": {"app": "eks-job"},
         },
         "spec": {
@@ -406,8 +403,8 @@ def generate_manifest(ctx, repo, image="eks-manager:v1", output_file=None):
                         {
                             "name": "eks-job-container",
                             "image": image,
-                            "command": command,  # Pass the constructed command
-                            "env": env_vars,  # Pass filtered environment variables
+                            "command": command,
+                            "env": env_vars,
                         }
                     ],
                     "restartPolicy": "Never",
@@ -416,10 +413,8 @@ def generate_manifest(ctx, repo, image="eks-manager:v1", output_file=None):
         },
     }
 
-    # Write the manifest to the dynamically set file name
     with open(output_file, "w") as f:
         yaml.dump(manifest, f)
     logger.info(f"Manifest written to {output_file}. Exiting.")
 
-    # Exit the process successfully
     sys.exit(0)
