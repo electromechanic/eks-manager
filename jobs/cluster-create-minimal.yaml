@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eks-create-cluster-job
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: eks-manager
+    spec:
+      restartPolicy: Never  
+      containers:
+        - name: eks-manager
+          image: eks-manager:v1
+          command: ["eks", "--debug", "cluster", "create"]      
+          env:
+            - name: EKS_CLUSTER_NAME
+              value: "the-cluster"
+            - name: EKS_CLUSTER_VERSION
+              value: '1.29'
+            - name: EKS_VPC_NAME
+              value: "lab-dev-us-east-1-vpc"     
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: aws_access_key_id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: aws_secret_access_key
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1" 

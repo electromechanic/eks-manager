@@ -1,24 +1,22 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: eks-create-cluster-job
+  name: eks-delete-cluster-job
 spec:
-  backoffLimit: 10  # Prevent retries if the job fails
+  backoffLimit: 3
   template:
     metadata:
       labels:
         app: eks-manager
     spec:
-      restartPolicy: Never  # Ensure no pod restarts
+      restartPolicy: Never
       containers:
         - name: eks-manager
-          image: eks-manager:v1   # Your built image
-          command: ["eks", "cluster", "create"]        # Command to run the CLI  # Subcommand to execute
+          image: eks-manager:v1
+          command: ["eks", "cluster", "delete"]
           env:
             - name: EKS_CLUSTER_NAME
-              value: "my-cluster"  # Replace with the actual cluster name
-            - name: EKS_VPC_NAME
-              value: "lab-dev-us-east-1-vpc"      # Replace with the actual VPC name
+              value: "the-cluster"
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
@@ -30,4 +28,4 @@ spec:
                   name: aws-credentials
                   key: aws_secret_access_key
             - name: AWS_DEFAULT_REGION
-              value: "us-east-1"   # Replace with your regio
+              value: "us-east-1"
