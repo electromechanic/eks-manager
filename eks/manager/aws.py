@@ -1,33 +1,28 @@
 import base64
-import datetime
 import json
 import logging
 import os
-import shutil
 import sys
 import tempfile
 import time
 import urllib.parse
-
-import time
-import kubernetes.client
-from kubernetes.client.rest import ApiException
-
-import botocore
-from botocore.signers import RequestSigner
 from copy import deepcopy
-from dateutil.tz import tzlocal
 from pprint import pformat
-from kubernetes import client as k8sclient, config as k8sconfig
 
 import boto3
+import botocore
 import yaml
-
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.credentials import Credentials
-from botocore.signers import RequestSigner
 from botocore.exceptions import ClientError
+from botocore.signers import RequestSigner
+
+from dateutil.tz import tzlocal
+
+import kubernetes.client
+from kubernetes import client as k8sclient, config as k8sconfig
+from kubernetes.client.rest import ApiException
 
 
 logger = logging.getLogger(__name__)  # TODO: add more logging

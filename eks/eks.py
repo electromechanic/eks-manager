@@ -1,20 +1,22 @@
-#! /usr/bin/env python3
+# noqa
+
 import atexit
-import click
 import copy
 import functools
 import logging
-from copy import deepcopy
-from pprint import pformat
 import sys
 import time
+from copy import deepcopy
+from pprint import pformat
 
-from eks.manager.aws import Vpc, Eks, k8s, IAM
+import click
+
+from eks.manager.aws import Eks, IAM, Vpc, k8s
 from eks.manager.utils import (
-    SpaceSeparatedList,
+    ConfigProcessor,
     KeyValueType,
     Repo,
-    ConfigProcessor,
+    SpaceSeparatedList,
     log_debug_parameters,
     set_args_in_repo,
 )
@@ -32,6 +34,12 @@ logger = logging.getLogger(__name__)
 # flush logs on exit
 atexit.register(logging.shutdown)
 
+sys.excepthook = handle_exception
+
+SPACE_SEPARATED_LIST = SpaceSeparatedList()
+KEY_VALUE_TYPE = KeyValueType()
+
+
 # Log uncaught exceptions
 def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
@@ -39,12 +47,6 @@ def handle_exception(exc_type, exc_value, exc_traceback):
         return
     logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
 
-
-sys.excepthook = handle_exception
-
-
-SPACE_SEPARATED_LIST = SpaceSeparatedList()
-KEY_VALUE_TYPE = KeyValueType()
 
 # Reusable decorator for shared options
 # fmt: off
@@ -222,7 +224,7 @@ def create(
     vpc_name,
 ):
     """Create a new cluster"""
-    logger.debug(f"starting cluster create command")
+    logger.debug("starting cluster create command")
 
     set_args_in_repo(repo, locals())
 

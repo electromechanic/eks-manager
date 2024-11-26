@@ -59,27 +59,25 @@ class Render(object):
 
     def fargateprofile(self):
         fargate_config = {
-            'fargateProfileName': self.repo.name,
-            'clusterName': self.repo.cluster_name,
-            'podExecutionRoleArn': self.repo.role_arn,
-            'subnets': self.repo.subnets,
-            'selectors': [
+            "fargateProfileName": self.repo.name,
+            "clusterName": self.repo.cluster_name,
+            "podExecutionRoleArn": self.repo.role_arn,
+            "subnets": self.repo.subnets,
+            "selectors": [
                 {
-                    'namespace': self.repo.namespace,
+                    "namespace": self.repo.namespace,
                 },
             ],
-            'tags': self.repo.tags
+            "tags": self.repo.tags,
         }
 
         if self.repo.labels:
-            fargate_config['selectors'][0]['labels'] = self.repo.labels
+            fargate_config["selectors"][0]["labels"] = self.repo.labels
 
         # if self.repo.client_request_token:
         #     fargate_config['clientRequestToken'] = self.repo.client_request_token
 
         return fargate_config
-
-
 
     def iam_user_config(self):
         iam_user_config = {"UserName": self.repo.iam_user_name}
@@ -103,12 +101,12 @@ class Render(object):
             "subnets": self.repo.subnets,
             "instanceTypes": self.repo.instance_types,
             "nodeRole": self.repo.node_role_arn,
-            'capacityType': self.repo.capacity_type,
+            "capacityType": self.repo.capacity_type,
             "tags": self.repo.tags,
         }
 
         if self.repo.ami_type:
-            nodegroup_config['amiType'] = self.repo.ami_type
+            nodegroup_config["amiType"] = self.repo.ami_type
 
         if self.repo.labels:
             nodegroup_config["labels"] = self.repo.labels
@@ -132,6 +130,6 @@ class Render(object):
             )
 
         if self.repo.release_version:
-            nodegroup_config['releaseVersion'] =  self.repo.release_version
+            nodegroup_config["releaseVersion"] = self.repo.release_version
 
         return nodegroup_config
